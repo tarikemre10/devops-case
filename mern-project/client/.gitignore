@@ -130,3 +130,6 @@ dist
 
 # DS STORE
 .DS_Store
+# Cypress artifacts
+cypress/videos/
+cypress/screenshots/

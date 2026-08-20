@@ -1,7 +1,9 @@
 # Mimari Tasarım Dokümanı
 
 Bu doküman sistemin **hedef mimarisini** ve her bileşenin somut yapılandırmasını tanımlar.
-Aşamalar ve çalışma kuralları için: [PROJE_PLANI.md](PROJE_PLANI.md)
+Aşamalar, kesim listesi ve çalışma kuralları için: [PROJE_PLANI.md](PROJE_PLANI.md)
+
+> **Durum:** Hedef mimari. Henüz uygulanmamıştır.
 
 ---
 
@@ -9,14 +11,16 @@ Aşamalar ve çalışma kuralları için: [PROJE_PLANI.md](PROJE_PLANI.md)
 
 | # | Karar | Seçilen | Gerekçe | Elenen alternatif |
 |---|---|---|---|---|
-| 1 | Bulut | AWS | EKS/ECR/ALB/IRSA olgun, case serbest bırakmış | GCP, HWC |
-| 2 | Orkestrasyon | **EKS + managed node group** | Sektör standardı; Fargate DaemonSet ve EBS PVC desteklemediği için Grafana Alloy + MongoDB planını bozardı | EKS Fargate, EC2+k3s |
+| 1 | Bulut | AWS · `eu-central-1` | EKS/ECR/ALB/IRSA olgun, case serbest bırakmış | GCP, HWC |
+| 2 | Orkestrasyon | **EKS + managed node group** (**3 × `t3.medium`**) | Sektör standardı; Fargate DaemonSet ve EBS PVC desteklemediği için Grafana Alloy + MongoDB planını bozardı. Boyut: 2×`t3.large`'dan hem ucuz hem 3 node ile PDB/anti-affinity gösterilebilir; `t3.small` VPC CNI `max-pods=11` limiti nedeniyle kullanılamaz | EKS Fargate, EC2+k3s, 2×`t3.large`, 2×`t3.medium` |
 | 3 | Veritabanı | **Cluster içi MongoDB StatefulSet** | Case "veritabanını da Dockerize et" diyor; Atlas/DocumentDB bunu karşılamaz | MongoDB Atlas, DocumentDB |
 | 4 | Manifest & deploy | **Kustomize + kubectl (push-based)** | En az hareketli parça, deploy adımı pipeline'da görünür | Helm, Argo CD |
-| 5 | Gözlemlenebilirlik | **kube-prometheus-stack + Loki + Grafana Alloy** | Promtail 2 Mart 2026’da EOL oldu → Grafana’nın önerdiği Alloy kullanılır; alert kuralları repo’da kod olarak durur, Grafana ekran görüntüsü üretir | CloudWatch Container Insights |
-| 6 | CI/CD | GitHub Actions + OIDC | Uzun ömürlü AWS anahtarı gerekmez | Jenkins, GitLab CI |
-| 7 | Registry | Amazon ECR | Cluster ile aynı hesap, scan-on-push | GHCR |
-| 8 | Frontend→API yolu | **Göreli `/api` + nginx reverse proxy** | CRA env'i build-time gömer; göreli yol ile aynı image tüm ortamlarda çalışır, CORS ortadan kalkar | `REACT_APP_API_URL` build-arg |
+| 5 | **TLS / giriş noktası** | **CloudFront → ALB** | **Kayıtlı domain yok.** CloudFront ücretsiz ve geçerli `*.cloudfront.net` sertifikası verir; case'in "public URL + HTTPS" beklentisi domain satın almadan karşılanır | Route53 + ACM (domain gerekir), ALB'de düz HTTP (TLS yok), self-signed (tarayıcı uyarısı) |
+| 6 | Gözlemlenebilirlik | **kube-prometheus-stack + Loki + Grafana Alloy** | Promtail 2 Mart 2026'da EOL oldu → Grafana'nın önerdiği Alloy kullanılır; alert kuralları repo'da kod olarak durur | CloudWatch Container Insights |
+| 7 | CI/CD | GitHub Actions + OIDC | Uzun ömürlü AWS anahtarı gerekmez | Jenkins, GitLab CI |
+| 8 | Registry | Amazon ECR | Cluster ile aynı hesap, scan-on-push | GHCR |
+| 9 | Frontend→API yolu | **Göreli `/api` + nginx reverse proxy** | CRA env'i build-time gömer; göreli yol ile aynı image tüm ortamlarda çalışır, CORS ortadan kalkar | `REACT_APP_API_URL` build-arg |
+| 10 | Secret yönetimi | **Terraform `random_password` → K8s Secret** | Git'te düz secret bulunmaması hedefini 3 gün içinde karşılar; ESO ayrı IRSA+CRD maliyeti getirirdi | External Secrets Operator + Secrets Manager (prod yolu) |
 
 ---
 
@@ -24,19 +28,19 @@ Aşamalar ve çalışma kuralları için: [PROJE_PLANI.md](PROJE_PLANI.md)
 
 ```mermaid
 graph TB
-    U[Kullanıcı] -->|HTTPS| R53[Route53]
-    R53 --> ALB[ALB · ACM TLS<br/>AWS Load Balancer Controller]
+    U[Kullanıcı] -->|HTTPS| CF["CloudFront<br/>d123.cloudfront.net<br/>varsayılan TLS sertifikası<br/>redirect-to-https"]
+    CF -->|HTTP · yalnız CloudFront prefix list| ALB["ALB<br/>AWS Load Balancer Controller"]
 
     subgraph VPC["VPC 10.0.0.0/16 · 2 AZ"]
         subgraph PUB["Public Subnets"]
             ALB
-            NAT[NAT Gateway]
+            NAT["NAT Gateway ×1<br/>(maliyet kısıtı)"]
         end
-        subgraph PRIV["Private Subnets — EKS Node Group"]
+        subgraph PRIV["Private Subnets — EKS Node Group 3×t3.medium"]
             subgraph NS["namespace: mern"]
-                FE["frontend Deployment ×2<br/>nginx:alpine · 8080"]
-                BE["backend Deployment ×2<br/>node:20 · 5050"]
-                DB[("mongodb StatefulSet ×1<br/>mongo:7 · 27017<br/>PVC gp3 10Gi")]
+                FE["frontend Deployment ×2<br/>nginx:1.27-alpine · 8080"]
+                BE["backend Deployment ×2<br/>node:20-alpine · 5050<br/>HPA 2→6"]
+                DB[("mongodb StatefulSet ×1<br/>mongo:7.0 · 27017<br/>PVC gp3 10Gi")]
                 CJ["etl CronJob<br/>0 * * * *"]
             end
             subgraph MON["namespace: monitoring"]
@@ -52,7 +56,7 @@ graph TB
     FE -->|nginx proxy /api| BE
     BE --> DB
     CJ -->|HTTPS via NAT| GH[api.github.com]
-    PROM -.-> AM -->|webhook| SLACK[Slack / e-posta]
+    PROM -.-> AM -->|webhook| SLACK[Slack]
     GRAF -.-> PROM
     GRAF -.-> LOKI
 ```
@@ -60,12 +64,30 @@ graph TB
 ### İstek akışı
 
 ```
-Tarayıcı → https://mern.<domain>/           → ALB → frontend:8080 → nginx → React SPA
-Tarayıcı → https://mern.<domain>/api/record → ALB → frontend:8080 → nginx proxy_pass
-                                             → backend:5050/record → MongoDB
+Tarayıcı → https://<id>.cloudfront.net/           → CF → ALB → frontend:8080 → nginx → React SPA
+Tarayıcı → https://<id>.cloudfront.net/api/record → CF → ALB → frontend:8080 → nginx proxy_pass
+                                                   → backend:5050/record → MongoDB
 ```
 
-**Kritik nokta:** Backend cluster dışına **açılmaz**. Tek giriş noktası ALB→frontend'dir; `/api` prefix'i nginx tarafından soyulup backend'e iletilir. Böylece tek origin, tek TLS sertifikası, CORS yok.
+**Kritik nokta:** Backend cluster dışına **açılmaz**. Tek giriş noktası CloudFront→ALB→frontend'dir;
+`/api` prefix'i nginx tarafından soyulup backend'e iletilir. Böylece tek origin, tek sertifika, CORS yok.
+
+### CloudFront yapılandırması (dikkat gerektiren nokta)
+
+CloudFront varsayılan olarak cache yapar ve bu API'yi **bozar**. İki ayrı behavior tanımlanır:
+
+| Path pattern | Cache policy | Origin request policy | Allowed methods |
+|---|---|---|---|
+| `/api/*` | **`CachingDisabled`** | **`AllViewerExceptHostHeader`** | GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE |
+| `*` (default) | `CachingOptimized` | `CORS-S3Origin` benzeri minimal | GET, HEAD |
+
+`AllViewerExceptHostHeader` olmadan Host header'ı origin'e taşınır ve ALB yönlendirmesi şaşar;
+`CachingDisabled` olmadan POST/PUT/DELETE ya reddedilir ya da bayat yanıt döner.
+Bu madde `docs/KARSILASILAN_ZORLUKLAR.md`'ye yazılır.
+
+**ALB Security Group:** yalnızca AWS yönetimli
+`com.amazonaws.global.cloudfront.origin-facing` prefix list'inden 80/tcp kabul eder.
+ALB DNS adına doğrudan erişim böylece kapalıdır — TLS atlatılamaz.
 
 ---
 
@@ -77,18 +99,33 @@ Tarayıcı → https://mern.<domain>/api/record → ALB → frontend:8080 → ng
 |---|---|
 | Image | `mern-client` — stage1 `node:20-alpine` build → stage2 `nginx:1.27-alpine` |
 | Port | 8080 (non-root nginx; 80 root gerektirir) |
-| Replica | 2 · HPA 2→6 (CPU %70) |
+| Replica | 2 (HPA kapsam dışı) |
 | Resources | req `50m/64Mi` · limit `200m/128Mi` |
 | Probe | liveness+readiness → `GET /` :8080 |
 
 **nginx yapılandırması:**
 ```nginx
-location /api/ { proxy_pass http://backend.mern.svc.cluster.local:5050/; }
-location /     { try_files $uri $uri/ /index.html; }   # SPA fallback
-gzip on; server_tokens off;
+resolver kube-dns.kube-system.svc.cluster.local valid=10s;
+
+server {
+  listen 8080;
+  server_tokens off;
+  gzip on;
+
+  # Değişkenli proxy_pass: nginx upstream'i istek anında çözer.
+  # Sabit yazılırsa backend Service gelmeden nginx başlamaz ve CrashLoop'a girer.
+  set $backend_upstream http://backend.mern.svc.cluster.local:5050;
+  location /api/ { proxy_pass $backend_upstream/; }   # trailing slash → /api prefix'i soyulur
+
+  location /     { try_files $uri $uri/ /index.html; }  # SPA fallback
+}
 ```
 
-**Gerekli kod değişikliği:** `create.js`, `edit.js`, `recordList.js`, `healthcheck.js` içindeki 6 adet `http://localhost:5050/...` → `/api/...`
+**`readOnlyRootFilesystem` için zorunlu `emptyDir` mount'ları:**
+`/var/cache/nginx`, `/var/run`, `/tmp`. Yoksa nginx yazamaz ve açılmaz.
+
+**Gerekli kod değişikliği:** `create.js`, `edit.js`, `recordList.js`, `healthcheck.js` içindeki
+6 adet `http://localhost:5050/...` → `/api/...`
 
 ### 3.2 Backend (`server`)
 
@@ -105,11 +142,17 @@ gzip on; server_tokens off;
 | Değişken | Kaynak |
 |---|---|
 | `ATLAS_URI` | Secret `mongo-credentials` → `mongodb://$user:$pass@mongodb-0.mongodb:27017/sample_training?authSource=admin` |
-| `PORT` | ConfigMap (5050) |
+| `MONGO_DB` | ConfigMap (`sample_training`) |
+| `PORT` / `HOST` | ConfigMap (5050 / `0.0.0.0`) |
 | `NODE_ENV` | `production` |
-| `CORS_ORIGIN` | ConfigMap — prod'da yalnızca kendi domaini |
+| `CORS_ORIGINS` | ConfigMap — varsayılan boş (same-origin) |
 
-**Gerekli kod değişikliği:** `db/conn.mjs` bağlantı hatasında `conn` undefined kalıp `conn.db()`'de çöküyor → retry/backoff + başarısızsa `process.exit(1)` (restart'ı K8s üstlensin). `server.mjs` `0.0.0.0`'a bind + `PORT` env desteği.
+**Gerekli kod değişikliği:** `db/conn.mjs` bağlantı hatasında `conn` undefined kalıp `conn.db()`'de
+çöküyor → retry/backoff + başarısızsa `process.exit(1)` (restart'ı K8s üstlensin).
+`server.mjs` `0.0.0.0`'a bind + `PORT` env desteği + `SIGTERM` graceful shutdown.
+
+> Metrik toplama uygulama kodundan değil, kube-state-metrics ve ALB/CloudFront metriklerinden
+> yapılır (`prom-client` kapsam dışı) — uygulama koduna müdahale minimumda tutulur.
 
 ### 3.3 MongoDB
 
@@ -117,13 +160,19 @@ gzip on; server_tokens off;
 |---|---|
 | Workload | StatefulSet, replica 1, `serviceName: mongodb` (Headless) |
 | Image | `mongo:7.0` |
-| Storage | `volumeClaimTemplates` → StorageClass `gp3`, 10Gi |
+| Storage | `volumeClaimTemplates` → StorageClass **`gp3`**, 10Gi |
 | Service | ClusterIP — **cluster dışına asla açılmaz** |
-| Auth | `MONGO_INITDB_ROOT_*` Secret'tan; DB `sample_training`, koleksiyon `records` |
+| Auth | `MONGO_INITDB_ROOT_*` Secret'tan (Terraform `random_password`); DB `sample_training`, koleksiyon `records` |
 | Probe | `mongosh --eval "db.adminCommand('ping')"` |
 | Resources | req `250m/512Mi` · limit `1000m/1Gi` |
 
-> Tek replica bilinçli bir tercihtir: case bir demo dağıtımıdır ve 3 node'lu ReplicaSet + init container'lı seçim mekanizması kapsamı gereksiz büyütür. Prod'a geçişte yol `mongodb-community-operator`'dür — bu README'de not edilir.
+> **Ön koşul:** `aws-ebs-csi-driver` addon'u + IRSA rolü + `gp3` StorageClass tanımı.
+> EKS 1.23+ sürümünde bunlar olmadan PVC kalıcı olarak `Pending`'de kalır ve StatefulSet açılmaz.
+> EKS varsayılan StorageClass'ı `gp2`'dir; `gp3` elle tanımlanır.
+
+> Tek replica bilinçli bir tercihtir: case bir demo dağıtımıdır ve 3 node'lu ReplicaSet +
+> init container'lı seçim mekanizması kapsamı gereksiz büyütür. Prod'a geçişte yol
+> `mongodb-community-operator`'dür — bu README'de not edilir.
 
 ### 3.4 ETL CronJob
 
@@ -136,8 +185,13 @@ restartPolicy: OnFailure
 successfulJobsHistoryLimit: 3
 failedJobsHistoryLimit: 3
 ```
+
 Image `etl` — `python:3.12-slim`, `requirements.txt` (`requests` pinli), non-root.
-`ETL.py`'nin **içeriği değiştirilmez**; `print()` çıktısı stdout’tan Grafana Alloy ile toplanır.
+
+**`ETL.py`'nin içeriği değiştirilmez** (case gereği). JSON log gereksinimi ayrı bir
+`python-project/runner.py` sarmalayıcısı ile karşılanır: `ETL.py`'yi çalıştırır,
+stdout'unu yapılandırılmış JSON log satırlarına çevirir, çıkış kodunu aynen döndürür.
+Container entrypoint `runner.py`'dir. Loglar Grafana Alloy ile toplanır.
 
 ---
 
@@ -146,25 +200,26 @@ Image `etl` — `python:3.12-slim`, `requirements.txt` (`requests` pinli), non-r
 ### NetworkPolicy (default deny)
 ```
 mern namespace: varsayılan tüm ingress/egress kapalı, üstüne:
-  ALB/ingress-nginx  → frontend:8080
-  frontend           → backend:5050
-  backend            → mongodb:27017
-  etl                → 0.0.0.0/0:443 (api.github.com)
-  tümü               → kube-dns:53
-  monitoring         → tüm pod'ların /metrics portu
+  ALB (node CIDR) → frontend:8080
+  frontend        → backend:5050
+  backend         → mongodb:27017
+  etl             → 0.0.0.0/0:443 (api.github.com)
+  tümü            → kube-dns:53
+  monitoring      → tüm pod'ların metrik portu
 ```
 
 ### Katman katman güvenlik
 
 | Katman | Önlem |
 |---|---|
+| Kenar | CloudFront'ta TLS (`redirect-to-https`); **ALB SG yalnız CloudFront prefix list'ine açık** → ALB'ye doğrudan HTTP erişimi yok |
 | Ağ | Node'lar private subnet; MongoDB ClusterIP; default-deny NetworkPolicy |
-| Taşıma | ALB'de ACM sertifikası, HTTP→HTTPS 301 |
 | Pod | `runAsNonRoot`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation:false`, `capabilities.drop:[ALL]`, `seccompProfile: RuntimeDefault` |
 | Kimlik | IRSA — pod bazlı IAM; node role'ünde geniş yetki yok |
-| Secret | AWS Secrets Manager → External Secrets Operator → K8s Secret. Git'te düz secret yok |
-| Image | ECR scan-on-push + CI'da Trivy (HIGH/CRITICAL → fail), base image'lar pinli |
+| Secret | Terraform `random_password` → K8s Secret; `*.tfstate` ve `*.tfvars` git dışı. Git'te düz secret yok |
+| Image | ECR scan-on-push + CI'da Trivy (`HIGH,CRITICAL` + `--ignore-unfixed` → fail), base image'lar pinli |
 | CI | GitHub OIDC → AWS role; uzun ömürlü access key yok |
+| Hesap | Root'ta MFA, billing alarmı (40 USD) |
 
 ---
 
@@ -173,21 +228,27 @@ mern namespace: varsayılan tüm ingress/egress kapalı, üstüne:
 ```
 .
 ├── mern-project/{client,server}/       # uygulama kaynağı (+ Aşama 1 düzeltmeleri)
-├── python-project/                     # ETL.py (dokunulmaz) + requirements.txt
+├── python-project/
+│   ├── ETL.py                          # dokunulmaz
+│   ├── runner.py                       # JSON log sarmalayıcı
+│   └── requirements.txt
 ├── docker/
 │   ├── Dockerfile.client · Dockerfile.server · Dockerfile.etl
 │   ├── nginx.conf
-│   └── docker-compose.yml              # lokal uçtan uca doğrulama
+│   └── docker-compose.yml              # mongo + be + fe + cypress/included:4.12.1
 ├── k8s/
 │   ├── base/                           # namespace, deployment, sts, cronjob,
-│   │                                   # svc, ingress, hpa, pdb, netpol, externalsecret
-│   └── overlays/{dev,prod}/            # replica, resource, domain farkları
+│   │                                   # svc, ingress, hpa, pdb, netpol, secret, configmap
+│   └── overlays/prod/
 ├── terraform/
-│   ├── modules/{network,eks,ecr,iam,addons}/
-│   └── envs/{dev,prod}/                # backend.tf (S3+DynamoDB), tfvars
+│   ├── modules/{network,eks,ecr,iam,addons,edge}/
+│   └── envs/prod/                      # backend.tf (S3+DynamoDB), tfvars
 ├── monitoring/                         # values.yaml + PrometheusRule + dashboard json
 ├── .github/workflows/{mern.yml,etl.yml}
-└── docs/{ARCHITECTURE.md,CHALLENGES.md,screenshots/}
+├── docs/
+│   ├── KARSILASILAN_ZORLUKLAR.md
+│   └── screenshots/
+├── MIMARI.md · PROJE_PLANI.md · README.md
 ```
 
 ---
@@ -201,37 +262,43 @@ graph LR
     E2E --> M{main'e merge?}
     M -->|hayır| STOP[dur]
     M -->|evet| B[buildx → image:GIT_SHA]
-    B --> T[Trivy scan<br/>HIGH/CRITICAL → fail]
+    B --> T["Trivy scan<br/>HIGH,CRITICAL<br/>--ignore-unfixed → fail"]
     T --> P[ECR push]
     P --> K[kustomize set image<br/>kubectl apply -k overlays/prod]
     K --> RS[rollout status<br/>başarısız → rollout undo]
-    RS --> S[smoke: /healthcheck 200<br/>/api/record 200]
+    RS --> S["smoke: /healthcheck 200<br/>/api/record 200"]
 ```
 
 - Image tag = **git commit SHA** (mutable `latest` deploy'a girmez → her deploy izlenebilir ve geri alınabilir).
-- `main` korumalı; prod deploy GitHub Environments ile manuel onaylı.
+- `main` korumalı; PR + yeşil CI zorunlu.
 - `etl.yml` ayrı pipeline: `ruff` → build → Trivy → push → CronJob image güncelle.
+- **OIDC federated role Terraform `iam` modülünde Gün 2'de kurulur** — trust policy hatası
+  ayıklamak Gün 3 sabahında yapılacak iş değildir.
 
 ---
 
 ## 7. Gözlemlenebilirlik
 
-**Loglar:** uygulama stdout → Grafana Alloy (DaemonSet) → Loki → Grafana. Retention 14 gün. Backend `pino` ile JSON log.
+**Loglar:** uygulama stdout → Grafana Alloy (DaemonSet) → Loki → Grafana. Retention 14 gün.
+Backend `pino` ile JSON log; ETL `runner.py` ile JSON log.
 
-**Metrikler:** kube-prometheus-stack. Backend `prom-client` ile `/metrics`: istek sayısı, hata oranı, p95 latency.
+**Metrikler:** kube-prometheus-stack (node-exporter, kube-state-metrics) + CloudWatch'tan
+ALB `HTTPCode_Target_5XX_Count`.
 
 **Alert kuralları** (`monitoring/PrometheusRule.yaml` → Alertmanager → Slack):
 
 | Alert | Koşul | Severity |
 |---|---|---|
 | `PodCrashLooping` | restart artışı > 0, 5 dk | critical |
-| `BackendHighErrorRate` | 5xx oranı > %5, 5 dk | critical |
+| `BackendHighErrorRate` | ALB target 5xx oranı > %5, 5 dk | critical |
 | `BackendNotReady` | readiness fail > 2 dk | critical |
 | `MongoDiskFilling` | PVC doluluk > %80 | warning |
 | **`ETLJobMissing`** | **son 1 saatte başarılı job yok** | critical |
 | `NodeNotReady` | node NotReady > 5 dk | critical |
 
-> `ETLJobMissing` mimarinin en kritik alert'idir: bir web servisi çökerse kullanıcı fark eder, bir CronJob sessizce çalışmayı bırakırsa **kimse fark etmez**. README'deki "saatte 1 çalışmalı" kriterinin tek gerçek doğrulaması budur.
+> `ETLJobMissing` mimarinin en kritik alert'idir: bir web servisi çökerse kullanıcı fark eder,
+> bir CronJob sessizce çalışmayı bırakırsa **kimse fark etmez**. README'deki "saatte 1 çalışmalı"
+> kriterinin tek gerçek doğrulaması budur. Zaman daralsa bile bu alert kesilmez.
 
 ---
 
@@ -239,21 +306,21 @@ graph LR
 
 | Senaryo | Yanıt |
 |---|---|
-| Trafik artışı | HPA frontend/backend 2→6; Cluster Autoscaler node ekler |
+| Trafik artışı | Backend HPA 2→6. **Node sayısı sabit (3 × `t3.medium`)** — Cluster Autoscaler kapsam dışı, sınır README'de yazılı |
 | Pod ölümü | Deployment yeniden yaratır; readiness hazır olmadan trafik gitmez |
-| Node kaybı | 2 AZ + PDB (`minAvailable: 1`) ile en az 1 replica ayakta |
+| Node kaybı | 2 AZ + 3 node + PDB (`minAvailable: 1`) + pod anti-affinity ile en az 1 replica ayakta |
+| Bellek baskısı | Monitoring'e ~7 GB allocatable kalır; sıkışırsa Loki+Alloy kesilir (Aşama 6 tampon kuralı), node büyütülmez |
 | Kötü deploy | `maxUnavailable: 0` rolling update; rollout fail → otomatik `rollout undo` |
-| DB verisi | EBS PVC kalıcı; StatefulSet yeniden planlanınca aynı volume bağlanır |
-| Bilinen sınır | MongoDB tek replica → yeniden planlanma sırasında kısa kesinti. Kabul edildi, README'de belirtildi |
+| DB verisi | EBS gp3 PVC kalıcı; StatefulSet yeniden planlanınca aynı volume bağlanır |
+| Statik içerik yükü | CloudFront edge cache (`/api/*` hariç) |
 
----
+### Bilinen sınırlar (README'de açıkça belirtilir)
 
-## 9. Ortam Farkları
-
-| | dev | prod |
-|---|---|---|
-| Replica (fe/be) | 1 / 1 | 2 / 2 |
-| HPA | kapalı | açık (2→6) |
-| Domain | `dev.<domain>` | `mern.<domain>` |
-| Log seviyesi | debug | info |
-| Deploy | main'e merge → otomatik | manuel onay (GitHub Environment) |
+| Sınır | Prod'a geçiş yolu |
+|---|---|
+| MongoDB tek replica → yeniden planlanmada kısa kesinti | `mongodb-community-operator` ile 3 node ReplicaSet |
+| Tek NAT Gateway → o AZ düşerse private egress kesilir | AZ başına NAT |
+| Node sayısı sabit (3), `t3` burst kredisiyle sınırlı CPU | Cluster Autoscaler / Karpenter + `m` serisi (burstable olmayan) node'lar |
+| Secret'lar Terraform state'inde | External Secrets Operator + AWS Secrets Manager |
+| Domain yok, `*.cloudfront.net` adı | Route53 + ACM + ExternalDNS (Terraform kodu hazır, yorum satırında) |
+| Tek ortam (`prod`) | `overlays/dev` eklenmesi |

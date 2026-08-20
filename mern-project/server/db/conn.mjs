@@ -1,17 +1,47 @@
 import { MongoClient } from "mongodb";
+import logger from "../logger.mjs";
 
 const connectionString = process.env.ATLAS_URI || "mongodb://localhost:27017";
+const dbName = process.env.MONGO_DB || "sample_training";
+const maxRetries = Number(process.env.MONGO_MAX_RETRIES || 10);
 
-const client = new MongoClient(connectionString);
+// serverSelectionTimeoutMS varsayılanı 30sn; readiness probe'unu bu kadar
+// bekletmemek için 5sn'ye çekiliyor.
+const client = new MongoClient(connectionString, {
+  serverSelectionTimeoutMS: 5000,
+});
 
-let conn;
-try {
-  console.log("Connecting to MongoDB Atlas...");
-  conn = await client.connect();
-} catch (e) {
-  console.error(e);
+// Kubernetes'te MongoDB pod'u backend'den sonra hazır olabilir. Bağlantı
+// hatasında süreci sessizce bozuk bırakmak yerine üstel backoff ile yeniden
+// denenir; denemeler tükenirse process.exit(1) ile çıkılır ve restart
+// sorumluluğu Kubernetes'e bırakılır.
+async function connectWithRetry() {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await client.connect();
+      await client.db(dbName).command({ ping: 1 });
+      logger.info({ attempt, db: dbName }, "mongo.connected");
+      return client.db(dbName);
+    } catch (err) {
+      const isLastAttempt = attempt === maxRetries;
+      const retryInMs = Math.min(2 ** attempt * 250, 10000);
+
+      logger.error(
+        { attempt, maxRetries, err: err.message, retryInMs: isLastAttempt ? null : retryInMs },
+        "mongo.connect_failed"
+      );
+
+      if (isLastAttempt) {
+        logger.fatal({ maxRetries }, "mongo.giving_up");
+        process.exit(1);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, retryInMs));
+    }
+  }
 }
 
-let db = conn.db("sample_training");
+const db = await connectWithRetry();
 
+export { client, db };
 export default db;

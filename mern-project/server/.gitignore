@@ -130,3 +130,5 @@ dist
 
 # DS STORE
 .DS_Store
+# Lokal ortam dosyası (örnek için .env-example kullanın)
+config.env
