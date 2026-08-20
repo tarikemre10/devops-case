@@ -1,0 +1,62 @@
+# React frontend + nginx reverse proxy
+#
+# Build context: mern-project/client
+#   docker build -f docker/Dockerfile.client \
+#     --build-context nginxconf=docker/nginx \
+#     -t mern-client mern-project/client
+#
+# nginx template'i bilinçli olarak docker/nginx/ altında durur: aynı dosya
+# Aşama 4'te Kubernetes ConfigMap'ine de kaynak olacak, yani tek doğruluk
+# kaynağıdır. Uygulama context'ine kopyalamak yerine "named build context"
+# ile verilir; böylece client context'i yalnızca uygulama kaynağını içerir.
+# docker-compose.yml bunu `additional_contexts` ile sağlar.
+
+# --- Stage 1: CRA build -----------------------------------------------------
+# node:20-alpine
+FROM node@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS build
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+
+# CRA production build -> /app/build
+# API adresleri göreli (/api) olduğu için build-time env değişkeni yok:
+# aynı imaj her ortamda çalışır.
+RUN npm run build
+
+# --- Stage 2: nginx ---------------------------------------------------------
+# nginx:1.27-alpine
+FROM nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 AS runtime
+
+# Entrypoint /etc/resolv.conf'tan nameserver'ları okuyup NGINX_LOCAL_RESOLVERS
+# değişkenine yazsın diye. Böylece aynı template compose'da (127.0.0.11) ve
+# Kubernetes'te (kube-dns) ortama özel düzenleme olmadan çalışır.
+ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1 \
+    BACKEND_UPSTREAM=backend:5050
+
+# Base imaj yayınlandıktan sonra çıkan OS güvenlik yamalarını alır
+# (libssl3, libxml2, libpng, musl, zlib …). Digest pinlemesi tekrarlanabilirliği,
+# bu satır güncelliği sağlar.
+RUN apk upgrade --no-cache
+
+COPY --from=build /app/build /usr/share/nginx/html
+COPY --from=nginxconf default.conf.template /etc/nginx/templates/default.conf.template
+
+# Non-root çalışabilmek için yazılabilir olması gereken yollar:
+#   /var/cache/nginx  proxy/client temp dosyaları
+#   /run              nginx.pid
+#   /etc/nginx/conf.d entrypoint template'i buraya render eder
+# Not: Kubernetes'te readOnlyRootFilesystem ile bu dört yol (+ /tmp) emptyDir
+# olarak mount edilmeli ve fsGroup 101 verilmelidir.
+RUN chown -R nginx:nginx /var/cache/nginx /run /etc/nginx/conf.d /usr/share/nginx/html
+
+# uid/gid 101, base imajda hazır. Port 80 root ayrıcalığı istediği için 8080.
+USER nginx
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1

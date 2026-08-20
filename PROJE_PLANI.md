@@ -3,8 +3,10 @@
 Bu doküman, case metnindeki gereklilikleri somut aşamalara ve uyulacak kurallara çevirir.
 Case metni: `Case Tanıtım Metni_Tr.txt` · Kabul kriterleri: `README.md` · Hedef mimari: `MIMARI.md`
 
-> **Durum:** **Aşama 1 tamamlandı ve doğrulandı** (Cypress e2e 3/3 geçiyor).
-> Aşama 0 sürüyor (AWS hesabı), Aşama 2 ve sonrası planlanmış durumda.
+> **Durum:** **Aşama 1 ve 2 tamamlandı ve doğrulandı.** `docker compose up` ile sistem
+> uçtan uca çalışıyor, Cypress e2e üretim artefaktına karşı 3/3 geçiyor, üç imaj da
+> non-root ve Trivy'de **0 HIGH/CRITICAL** bulgu veriyor.
+> Aşama 0 sürüyor (AWS hesabı), Aşama 3 ve sonrası planlanmış durumda.
 > Ayrıntılar ve doğrulama kanıtları: `docs/KARSILASILAN_ZORLUKLAR.md`
 
 ---
@@ -36,7 +38,7 @@ teslim `README.md`'sinde "prod'a geçiş yolu" olarak not edilir:
 | External Secrets Operator + Secrets Manager | Terraform üretimli K8s Secret | Ayrı IRSA + CRD + debug maliyeti; güvenlik hedefi (git'te düz secret yok) zaten karşılanıyor |
 | Route53 + ACM + ExternalDNS | CloudFront varsayılan sertifikası | Kayıtlı domain yok |
 | `dev` / `prod` overlay ayrımı | Tek `base` + `overlays/prod` | Kustomize hata yüzeyini yarıya indirir |
-| Cluster Autoscaler | Sabit 2 node + HPA | Ölçekleme yeteneği HPA ile zaten kanıtlanır |
+| Cluster Autoscaler | Sabit 3 node + HPA | Ölçekleme yeteneği HPA ile zaten kanıtlanır |
 | Frontend HPA | Yalnız backend HPA | Aynı yetenek, yarı yapılandırma |
 | Backend `prom-client` `/metrics` | kube-state-metrics + ALB/CloudFront metrikleri | Uygulama koduna daha az müdahale |
 | MongoDB ReplicaSet (3 node) | Tek replica StatefulSet | Demo dağıtımı; sınır README'de açıkça yazılır |
@@ -137,15 +139,16 @@ kanıtlar `docs/KARSILASILAN_ZORLUKLAR.md`'de.
 
 ---
 
-## Aşama 2 — Konteynerleştirme
+## Aşama 2 — Konteynerleştirme ✅ **TAMAMLANDI**
 
 - **Backend** — `node:20-alpine`, multi-stage, `npm ci --omit=dev`, non-root `USER node`, `tini` ile PID 1.
 - **Frontend** — stage 1 `node:20-alpine` (`npm ci && npm run build`), stage 2 `nginx:1.27-alpine`; nginx conf'ta `/api` proxy, SPA fallback (`try_files ... /index.html`), gzip. Non-root nginx (port 8080).
-- **ETL** — `python:3.12-slim`, `requirements.txt` (`requests` pinlenmiş), non-root, entrypoint `runner.py`.
+- **ETL** — **`python:3.12-alpine`** (slim'de 36 düzeltilebilir CVE vardı), `requirements.txt` (`requests` pinlenmiş), non-root uid 10001, entrypoint `runner.py`.
 - **MongoDB** — resmi `mongo:7.0` imajı; **yeniden derlenmez**, StatefulSet ile çalıştırılır.
 
 **Kurallar**
-- Base image'lar **sabit minor tag veya digest** ile pinlenir; `latest` yasak.
+- Base image'lar **SHA256 digest** ile pinlenir (`latest` ve mutable tag yasak); üstüne
+  `apk upgrade` katmanı eklenir — digest tekrarlanabilirliği, upgrade güncelliği sağlar.
 - Her image'da `.dockerignore` (node_modules, .git, cypress videoları).
 - Katman sırası: önce bağımlılık dosyaları, sonra kaynak kod (cache verimliliği).
 - Image'lar `HEALTHCHECK` içerir ve **root olmayan** kullanıcıyla çalışır.
@@ -164,7 +167,11 @@ kanıtlar `docs/KARSILASILAN_ZORLUKLAR.md`'de.
 servisi. Repo `cypress ^4.2.0` + `cypress.json` + `integration/` düzenini kullanıyor; Cypress 10+
 imajları bu testleri bulamaz, sürüm bu yüzden pinlenir.
 
-**Çıktı:** `docker/` altında 3 Dockerfile, `nginx.conf`, `docker-compose.yml`.
+**Çıktı:** `docker/Dockerfile.{server,client,etl}`, `docker/nginx/default.conf.template`,
+kökte `docker-compose.yml`, üç `.dockerignore`.
+
+**Sonuç:** frontend 63 MB · etl 52 MB · backend 153 MB; üçü de non-root ve
+Trivy'de 0 HIGH/CRITICAL (ilk taramada 95 düzeltilebilir bulgu vardı, hepsi kapatıldı).
 
 ---
 
@@ -240,8 +247,8 @@ k8s/
 - `main`'e doğrudan push kapalı; PR + yeşil CI zorunlu.
 - Test aşaması atlanamaz; deploy yalnızca testler geçerse çalışır.
 - **Trivy ayarı:** `--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1`.
-  `--ignore-unfixed` olmadan `mongo:7` ve `node:20-alpine`'daki düzeltmesi olmayan CVE'ler
-  `main`'i kalıcı kırmızıya çevirir.
+  `--ignore-unfixed` olmadan düzeltmesi olmayan CVE'ler `main`'i kalıcı kırmızıya çevirir.
+  Bu eşik Aşama 2'de lokal olarak kalibre edildi; imajlar hâlihazırda temiz geçiyor.
 
 ---
 

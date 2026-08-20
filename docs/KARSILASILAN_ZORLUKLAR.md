@@ -76,10 +76,67 @@ ve bu yüzden önceden planlanmış yapılandırma kararlarıdır.
 | # | Durum | Konu | Sorun | Çözüm |
 |---|---|---|---|---|
 | A | [ ] | **EBS CSI Driver** | EKS 1.23+ sürümünde `aws-ebs-csi-driver` addon'u ve IRSA rolü olmadan MongoDB'nin `volumeClaimTemplates` PVC'si kalıcı olarak `Pending`'de kalır; StatefulSet hiç açılmaz | Terraform `addons` modülünde **ilk sırada** kurulur; ayrıca `gp3` StorageClass elle tanımlanır (EKS varsayılanı `gp2`) |
-| B | [ ] | **nginx upstream DNS** | `proxy_pass` sabit yazılırsa nginx başlangıçta DNS çözümler; backend Service henüz yokken pod CrashLoop'a girer | `resolver kube-dns.kube-system.svc.cluster.local valid=10s` + değişkenli `proxy_pass $backend_upstream/` |
-| C | [ ] | **nginx + `readOnlyRootFilesystem`** | nginx `/var/cache/nginx`, `/var/run`, `/tmp` dizinlerine yazamadığı için açılmaz | Bu üç yol için `emptyDir` mount'ı |
+| B | [x] | **nginx upstream DNS** | `proxy_pass` sabit yazılırsa nginx başlangıçta DNS çözümler; backend Service henüz yokken pod CrashLoop'a girer | Değişkenli `proxy_pass` + resolver. **Resolver adresi sabit yazılmıyor:** imajın `15-local-resolvers.envsh` scripti `/etc/resolv.conf`'tan okuyup `$NGINX_LOCAL_RESOLVERS`'a yazıyor → aynı template compose'da (`127.0.0.11`) ve K8s'te (kube-dns) çalışıyor. Compose'da doğrulandı. |
+| C | [x] | **nginx + `readOnlyRootFilesystem`** | nginx `/var/cache/nginx`, `/run`, `/tmp` dizinlerine yazamadığı için açılmaz | Dockerfile'da bu yollar `chown nginx:nginx` yapıldı. **Dördüncü yol keşfedildi: `/etc/nginx/conf.d`** — envsubst template'i oraya render ediyor, yazamazsa script sessizce çıkıyor ve nginx varsayılan sayfayı servis ediyor. K8s'te dört `emptyDir` + `fsGroup: 101` gerekecek. |
 | D | [ ] | **CloudFront cache API'yi bozuyor** | Varsayılan behavior GET dışını reddeder / bayat yanıt döner; Host header origin'e taşınırsa ALB yönlendirmesi şaşar | `/api/*` için ayrı behavior: `CachingDisabled` + `AllViewerExceptHostHeader` + tüm HTTP metodları |
-| E | [ ] | **Trivy pipeline'ı kilitliyor** | `mongo:7` ve `node:20-alpine` imajlarında düzeltmesi olmayan HIGH/CRITICAL CVE'ler her zaman bulunur → `main` kalıcı kırmızı | `--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1` |
+| E | [x] | **Trivy pipeline'ı kilitliyor** | Düzeltmesi olmayan CVE'ler `main`'i kalıcı kırmızıya çevirir | `--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1`. Aşama 2'de lokal olarak çalıştırıldı; **düzeltilebilir 95 bulgu çıktı ve üçü de 0'a indirildi** (aşağıya bakınız). CI eşiği artık gerçekçi. |
 | F | [x] | **Cypress sürüm uyumu** | Repo `cypress ^4.2.0` + `cypress.json` + `integration/` düzenini kullanıyor; Cypress 10+ imajları bu testleri bulamaz. Ayrıca Cypress 4.x **host makinede hiç başlamıyor** (Ubuntu 24.04 kütüphane uyumsuzluğu) | `cypress/included:4.12.1` imajı pinlendi ve Aşama 1 doğrulamasında fiilen kullanıldı — 3/3 geçti |
 | G | [ ] | **Domain yok** | Kayıtlı domain olmadığı için Route53 + ACM ile TLS kurulamaz; ancak case public URL ve HTTPS bekliyor | ALB önüne CloudFront: ücretsiz ve geçerli `*.cloudfront.net` sertifikası, `redirect-to-https`. ALB Security Group yalnız `com.amazonaws.global.cloudfront.origin-facing` prefix list'ine açılır → ALB'ye doğrudan erişim kapalı |
 | H | [ ] | **Yeni AWS hesabı** | Hesap aktivasyonu saatler sürebilir; yeni hesaplarda EC2 vCPU kotası düşük gelebilir ve artırma talebi 24–48 saat alır | Hesap açma + kota kontrolü Gün 0'a alındı; Aşama 1–2 AWS gerektirmediği için beklerken yürütülür |
+
+---
+
+## Aşama 2 — Konteynerleştirme ✅ **tamamlandı ve doğrulandı**
+
+Üç imaj (`docker/Dockerfile.{server,client,etl}`) + tek `nginx` template'i +
+kökte `docker-compose.yml`. Doğrulama: tüm yığın ayağa kalktı, Cypress
+**3/3 geçti** — bu kez CRA dev server'a değil **üretim artefaktına** (nginx +
+build edilmiş SPA) karşı.
+
+### Karşılaşılan sorunlar
+
+| # | Durum | Konu | Sorun | Çözüm |
+|---|---|---|---|---|
+| 15 | [x] | **Değişkenli `proxy_pass` URI semantiğini değiştiriyor** | `location /api/ { proxy_pass $upstream/; }` yazıldığında backend'e giden her istek `/` oluyordu (`Cannot GET /`, 404). nginx dokümantasyonundaki "sondaki slash öneki soyar" kuralı **yalnızca sabit `proxy_pass` için geçerli**; direktif değişken içerdiğinde yazılan URI, isteğin URI'siyle birleştirilmez, onun **yerine konur**. | `rewrite ^/api/(.*)$ /$1 break;` + URI'siz `proxy_pass $backend_upstream;`. Bu, DNS gecikmeli çözümleme avantajını korurken önek soymayı doğru yapar. |
+| 16 | [x] | **Host portu 8080 dolu** | Makinede çalışan başka bir projenin container'ı 8080'i tutuyordu; `docker compose up` "port is already allocated" ile düşüyordu | Host portları `${FRONTEND_PORT:-8080}` / `${BACKEND_PORT:-5050}` ile yapılandırılabilir yapıldı. Temiz makinede varsayılan 8080, çakışma varsa `FRONTEND_PORT=8081 docker compose up -d`. |
+| 17 | [x] | **nginx template context dışında** | Template `docker/nginx/` altında duruyor (Aşama 4'te K8s ConfigMap'ine de kaynak olacak), ama client build context'i `mern-project/client` | Uygulama context'ini kirletmek yerine **named build context** kullanıldı: compose'da `additional_contexts: nginxconf: ./docker/nginx`, Dockerfile'da `COPY --from=nginxconf`. Tek doğruluk kaynağı korunur. |
+
+### Güvenlik: Trivy bulguları 95 → 0
+
+Trivy Aşama 5'e bırakılmayıp **burada** çalıştırıldı. İlk tarama düzeltilebilir
+95 HIGH/CRITICAL bulgu verdi; hepsi kapatıldı:
+
+| İmaj | Önce | Kaynak | Çözüm | Sonra |
+|---|---|---|---|---|
+| backend | 24 (1 CRITICAL) | **18'i base imajdaki npm'in kendi bağımlılıklarından** (`tar`, `minimatch`, `cross-spawn`, `sigstore` …), 4'ü express 4.18'den, 2'si alpine OS'tan | Çalışma zamanı imajından `npm` kaldırıldı (uygulama `node server.mjs` ile başlıyor, npm'e ihtiyaç yok) · express `4.18.2 → 4.22.2` · `apk upgrade` | **0** |
+| frontend | 35 (2 CRITICAL) | Tamamı alpine OS paketleri (`libssl3`, `libxml2`, `libpng`, `musl`, `zlib` …) | `apk upgrade --no-cache` | **0** |
+| etl | 36 | Tamamı Debian `util-linux`/`login`/`mount` ailesi — bir batch job'ın hiç kullanmadığı paketler | Base `python:3.12-slim` → **`python:3.12-alpine`** (tek bağımlılık `requests` saf Python, derleme gerekmiyor) | **0** |
+
+> **Çıkarım:** "digest ile pinle" ve "güncel tut" birbiriyle çelişmez —
+> digest tekrarlanabilirliği, `apk upgrade` katmanı güncelliği sağlar.
+> Ayrıca *çalışma zamanında gerekmeyen her araç* (burada npm) saldırı yüzeyidir:
+> tek bir `rm -rf` 18 CVE'yi birden kapattı.
+
+### Doğrulama kanıtları
+
+| Test | Sonuç |
+|---|---|
+| `docker compose up` sağlık zinciri | mongo healthy → backend healthy → frontend healthy |
+| nginx proxy `/api/healthcheck/` · `/api/record/` | 200 · 200 |
+| SPA fallback `/`, `/records`, `/create`, `/edit/abc` | dördü de 200 |
+| Status kodları proxy üzerinden | olmayan kayıt **404**, POST **201** |
+| Render edilmiş conf (resolver kanıtı) | `resolver 127.0.0.11 valid=10s;` — otomatik dolduruldu |
+| Kullanıcı kimlikleri | backend `uid=1000(node)` · frontend `uid=101(nginx)` · etl `uid=10001(etl)` — **hiçbiri root değil** |
+| PID 1 | `tini` |
+| `docker compose stop backend` | `shutdown_started` → `shutdown_complete`, 10sn timeout'a düşmeden |
+| ETL container | JSON log + `exit 0` |
+| **Cypress (üretim artefaktına karşı)** | **3/3 geçti** |
+| Trivy (üç imaj) | **0 HIGH / 0 CRITICAL** |
+| İmaj boyutları | frontend 63 MB · etl 52 MB · backend 153 MB |
+
+### Not: ETL imajında `HEALTHCHECK` yok
+
+Bilinçli tercih. ETL sürekli çalışan bir servis değil, tek seferlik bir batch iş;
+sürekli yoklanacak bir process yok. Sağlığı çıkış koduyla ölçülür — `runner.py`
+hata durumunda `exit 1` döner, Kubernetes Job'ı `Failed` işaretler ve
+`ETLJobMissing` alert'i tetiklenir.

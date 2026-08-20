@@ -3,7 +3,9 @@
 Bu doküman sistemin **hedef mimarisini** ve her bileşenin somut yapılandırmasını tanımlar.
 Aşamalar, kesim listesi ve çalışma kuralları için: [PROJE_PLANI.md](PROJE_PLANI.md)
 
-> **Durum:** Hedef mimari. Henüz uygulanmamıştır.
+> **Durum:** Aşama 1 (kod hazırlığı) ve Aşama 2 (konteynerleştirme) **uygulandı ve doğrulandı**;
+> §3.1–3.4 artık çalışan gerçeği anlatıyor. Aşama 3 ve sonrası hedef tasarımdır.
+> Doğrulama kanıtları: [docs/KARSILASILAN_ZORLUKLAR.md](docs/KARSILASILAN_ZORLUKLAR.md)
 
 ---
 
@@ -97,46 +99,62 @@ ALB DNS adına doğrudan erişim böylece kapalıdır — TLS atlatılamaz.
 
 | | |
 |---|---|
-| Image | `mern-client` — stage1 `node:20-alpine` build → stage2 `nginx:1.27-alpine` |
+| Image | `mern-client` — stage1 `node:20-alpine` build → stage2 `nginx:1.27-alpine`, ikisi de **digest pinli** · 63 MB · Trivy 0 bulgu |
 | Port | 8080 (non-root nginx; 80 root gerektirir) |
 | Replica | 2 (HPA kapsam dışı) |
 | Resources | req `50m/64Mi` · limit `200m/128Mi` |
 | Probe | liveness+readiness → `GET /` :8080 |
 
-**nginx yapılandırması:**
-```nginx
-resolver kube-dns.kube-system.svc.cluster.local valid=10s;
+**nginx yapılandırması** — tek dosya, hem compose hem Kubernetes için:
+`docker/nginx/default.conf.template` ([Aşama 2'de yazıldı ve doğrulandı](docs/KARSILASILAN_ZORLUKLAR.md))
 
+```nginx
 server {
   listen 8080;
   server_tokens off;
   gzip on;
 
+  # Resolver adresi SABİT YAZILMAZ: imajın 15-local-resolvers.envsh scripti
+  # /etc/resolv.conf'tan okuyup bu değişkeni doldurur. Böylece aynı template
+  # compose'da 127.0.0.11, Kubernetes'te kube-dns ClusterIP ile render olur.
+  resolver ${NGINX_LOCAL_RESOLVERS} valid=10s;
+
   # Değişkenli proxy_pass: nginx upstream'i istek anında çözer.
   # Sabit yazılırsa backend Service gelmeden nginx başlamaz ve CrashLoop'a girer.
-  set $backend_upstream http://backend.mern.svc.cluster.local:5050;
-  location /api/ { proxy_pass $backend_upstream/; }   # trailing slash → /api prefix'i soyulur
+  set $backend_upstream http://${BACKEND_UPSTREAM};
+
+  location /api/ {
+    # DİKKAT: değişkenli proxy_pass'te "sondaki slash öneki soyar" kuralı
+    # GEÇERSİZDİR — nginx yazılan URI'yi isteğinkiyle birleştirmez, yerine koyar.
+    # Önek bu yüzden rewrite ile soyulur, proxy_pass URI'siz bırakılır.
+    rewrite ^/api/(.*)$ /$1 break;
+    proxy_pass $backend_upstream;
+  }
 
   location /     { try_files $uri $uri/ /index.html; }  # SPA fallback
 }
 ```
 
-**`readOnlyRootFilesystem` için zorunlu `emptyDir` mount'ları:**
-`/var/cache/nginx`, `/var/run`, `/tmp`. Yoksa nginx yazamaz ve açılmaz.
+**`readOnlyRootFilesystem` için zorunlu `emptyDir` mount'ları — dört adet:**
+`/var/cache/nginx`, `/run`, `/tmp` ve **`/etc/nginx/conf.d`**.
+Sonuncusu kolayca gözden kaçar: envsubst template'i oraya render eder; yazamazsa
+script hata verip sessizce çıkar ve nginx varsayılan sayfayı servis eder.
+Ayrıca `securityContext.fsGroup: 101` gerekir, aksi halde emptyDir'ler root sahipli gelir.
 
-**Gerekli kod değişikliği:** `create.js`, `edit.js`, `recordList.js`, `healthcheck.js` içindeki
-6 adet `http://localhost:5050/...` → `/api/...`
+**Yapılan kod değişikliği (Aşama 1):** `create.js`, `edit.js`, `recordList.js`, `healthcheck.js`
+içindeki 6 adet `http://localhost:5050/...` → `${API_URL}/...` (`src/api.js`, göreli `/api`).
+Dev ortamda aynı rewrite'ı `src/setupProxy.js` sağlar.
 
 ### 3.2 Backend (`server`)
 
 | | |
 |---|---|
-| Image | `mern-server` — `node:20-alpine`, `npm ci --omit=dev`, `USER node`, tini PID1 |
+| Image | `mern-server` — `node:20-alpine` digest pinli, `npm ci --omit=dev`, `USER node`, tini PID1, **runtime'dan npm kaldırıldı** (18 CVE) · 153 MB · Trivy 0 bulgu |
 | Port | 5050 |
 | Replica | 2 · HPA 2→6 (CPU %70) |
 | Resources | req `100m/128Mi` · limit `500m/256Mi` |
 | Liveness | `GET /healthcheck` — sadece process canlılığı |
-| Readiness | `GET /healthcheck/ready` — Mongo `ping` içerir *(eklenecek)* |
+| Readiness | `GET /healthcheck/ready` — Mongo `ping` içerir; hata durumunda 503 |
 
 **Env:**
 | Değişken | Kaynak |
@@ -147,9 +165,10 @@ server {
 | `NODE_ENV` | `production` |
 | `CORS_ORIGINS` | ConfigMap — varsayılan boş (same-origin) |
 
-**Gerekli kod değişikliği:** `db/conn.mjs` bağlantı hatasında `conn` undefined kalıp `conn.db()`'de
-çöküyor → retry/backoff + başarısızsa `process.exit(1)` (restart'ı K8s üstlensin).
-`server.mjs` `0.0.0.0`'a bind + `PORT` env desteği + `SIGTERM` graceful shutdown.
+**Yapılan kod değişikliği (Aşama 1):** `db/conn.mjs` bağlantı hatasında `conn` undefined kalıp
+`conn.db()`'de çöküyordu → üstel backoff'lu retry + tükenirse `process.exit(1)`
+(restart'ı K8s üstlenir). `server.mjs` `0.0.0.0`'a bind + `PORT`/`HOST` env desteği +
+`SIGTERM` graceful shutdown (tini PID 1 üzerinden doğrulandı). Loglar `pino` ile JSON.
 
 > Metrik toplama uygulama kodundan değil, kube-state-metrics ve ALB/CloudFront metriklerinden
 > yapılır (`prom-client` kapsam dışı) — uygulama koduna müdahale minimumda tutulur.
@@ -186,7 +205,8 @@ successfulJobsHistoryLimit: 3
 failedJobsHistoryLimit: 3
 ```
 
-Image `etl` — `python:3.12-slim`, `requirements.txt` (`requests` pinli), non-root.
+Image `etl` — **`python:3.12-alpine`** digest pinli (slim'de 36 düzeltilebilir CVE vardı, alpine'da 0), `requirements.txt` (`requests` pinli), non-root uid 10001 · 52 MB.
+`HEALTHCHECK` yok: tek seferlik batch iş, sağlığı çıkış koduyla ölçülür.
 
 **`ETL.py`'nin içeriği değiştirilmez** (case gereği). JSON log gereksinimi ayrı bir
 `python-project/runner.py` sarmalayıcısı ile karşılanır: `ETL.py`'yi çalıştırır,
@@ -217,7 +237,7 @@ mern namespace: varsayılan tüm ingress/egress kapalı, üstüne:
 | Pod | `runAsNonRoot`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation:false`, `capabilities.drop:[ALL]`, `seccompProfile: RuntimeDefault` |
 | Kimlik | IRSA — pod bazlı IAM; node role'ünde geniş yetki yok |
 | Secret | Terraform `random_password` → K8s Secret; `*.tfstate` ve `*.tfvars` git dışı. Git'te düz secret yok |
-| Image | ECR scan-on-push + CI'da Trivy (`HIGH,CRITICAL` + `--ignore-unfixed` → fail), base image'lar pinli |
+| Image | ECR scan-on-push + CI'da Trivy (`HIGH,CRITICAL` + `--ignore-unfixed` → fail). Base image'lar **SHA256 digest** ile pinli, üstüne `apk upgrade` katmanı. Aşama 2 sonunda üç imaj da **0 HIGH/CRITICAL**. |
 | CI | GitHub OIDC → AWS role; uzun ömürlü access key yok |
 | Hesap | Root'ta MFA, billing alarmı (40 USD) |
 
