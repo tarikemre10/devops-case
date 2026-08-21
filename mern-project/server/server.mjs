@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import pinoHttp from "pino-http";
 import "./loadEnvironment.mjs";
 import logger from "./logger.mjs";
 import { client } from "./db/conn.mjs";
@@ -24,6 +25,28 @@ if (corsOrigins.length > 0) {
   app.use(cors({ origin: corsOrigins }));
   logger.info({ corsOrigins }, "cors.enabled");
 }
+
+// İstek/yanıt logu (Aşama 6, madde 51). Bu middleware olmadan backend Loki'ye
+// yalnızca açılış satırlarını yazıyordu; "loglama" panelleri pratikte boştu.
+//
+// Probe'lar BİLEREK dışarıda: liveness + readiness saniyede birkaç kez gelir ve
+// gerçek trafiği gürültüde boğar — 14 günlük retention'ı da gereksiz doldurur.
+app.use(
+  pinoHttp({
+    logger,
+    autoLogging: {
+      ignore: (req) => req.url.startsWith("/healthcheck"),
+    },
+    // 4xx uyarı, 5xx hata: Grafana'da severity'ye göre filtrelenebilsin.
+    customLogLevel: (req, res, err) => {
+      if (err || res.statusCode >= 500) return "error";
+      if (res.statusCode >= 400) return "warn";
+      return "info";
+    },
+    customSuccessMessage: () => "http.request",
+    customErrorMessage: () => "http.request_failed",
+  }),
+);
 
 app.use(express.json());
 

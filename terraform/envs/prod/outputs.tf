@@ -52,3 +52,21 @@ output "origin_verify_secret" {
   value       = random_password.origin_verify.result
   sensitive   = true
 }
+
+# ---------------------------------------------------------------------------
+# Aşama 6 — Monitoring
+# ---------------------------------------------------------------------------
+
+output "grafana_admin_password" {
+  description = "Grafana admin parolası (kullanıcı: admin). `terraform output -raw grafana_admin_password` ile okunur."
+  value       = random_password.grafana_admin.result
+  sensitive   = true
+}
+
+output "grafana_port_forward" {
+  description = <<-EOT
+    Grafana bilinçli olarak dışarı açılmaz (ALB SG yalnız CloudFront'a açık).
+    Erişim bu komutla sağlanır, ardından http://localhost:3000.
+  EOT
+  value       = "kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80"
+}

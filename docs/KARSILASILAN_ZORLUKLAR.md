@@ -290,3 +290,86 @@ Pipeline üzerinde doğrulanacaklar: assume-role ile `kubectl -n mern get deploy
 çalışır / `kubectl get nodes` ve `get secret` **Forbidden**; PR'da deploy job'ı skipped;
 merge'te ECR'de yeni SHA + rollout Complete + smoke JSON `mongo:"up"`;
 merge sonrası CronJob tag'i değişmemiş; `git grep ORIGIN_VERIFY` yalnız placeholder.
+
+---
+
+## Aşama 6 — Logging, Monitoring, Alerting
+
+Yığın `terraform/envs/prod/monitoring.tf` içinde üç `helm_release` ile kuruluyor:
+kube-prometheus-stack `88.5.3` · loki `7.3.0` · alloy `1.11.1`. Sürümler **tam
+pinli**; `~> 88.5` yazılsaydı apply günü farklı bir chart çekilir ve
+tekrarlanabilirlik iddiası çökerdi.
+
+| # | Durum | Sorun | Çözüm |
+|---|---|---|---|
+| 41 | [x] | **`ruleSelector` tuzağı — sessiz alarm** | kube-prometheus-stack varsayılanda `ruleSelectorNilUsesHelmValues: true` ile gelir; Prometheus YALNIZCA `release=<name>` label'lı kendi kaynaklarını toplar. Dışarıdan gelen `PrometheusRule` hata vermeden **sessizce yok sayılır** — `kubectl get prometheusrule` kaynağı listeler, alarm hiç çalışmaz | Dört bayrak da `false`: `ruleSelectorNilUsesHelmValues`, `serviceMonitorSelectorNilUsesHelmValues`, `podMonitorSelectorNilUsesHelmValues`, `probeSelectorNilUsesHelmValues`. Render'da doğrulandı: `ruleSelector: {}`. Cluster doğrulaması: `curl localhost:9090/api/v1/rules \| jq '.data.groups[].name'` → `mern-workloads`, `mern-etl`, `cluster-health` |
+| 42 | [x] | **`absent()` olmadan alarm hiç ateşlenmez** | `kube_pod_container_status_ready{container="backend"} == 0` doğru görünür ama tüm backend pod'ları yok olduğunda (ImagePullBackOff, node kaybı) **zaman serisi tamamen kaybolur** ve ifade boş küme döner. Aynı sorun `kube_cronjob_status_last_successful_time` için de var: CronJob hiç çalışmadıysa metrik hiç doğmaz | `sum(...) < 1 or absent(...)` ve ETL'de `(time() - ... > 3900) or absent(...)`. Sessiz alarm, alarm olmamasından kötüdür |
+| 43 | [x] | **Alloy DaemonSet olursa loglar çoğalır** | `loki.source.kubernetes` logları hostPath'ten değil **Kubernetes API'sinden** okur. DaemonSet olarak çalıştırılırsa her node'daki instance tüm eşleşen pod'ları toplar ve aynı satır node sayısı kadar Loki'ye yazılır (3 node → 3 kopya) | `controller.type: deployment`, `replicas: 1`. Alternatif Alloy clustering/sharding'di; bu ölçekte gereksiz karmaşıklık. Bedeli: pod restart'ında kısa log boşluğu. Yan fayda: 2 pod slotu tasarrufu |
+| 44 | [x] | **Loki boş `schemaConfig` ile açılmaz** | Chart varsayılanı `schemaConfig: {}`; öylece bırakılırsa Loki CrashLoop'a girer. Ayrıca `replication_factor` varsayılanı 3'tür ve SingleBinary'de tutmaz | `schemaConfig` açıkça yazıldı (tsdb + v13 + filesystem), `replication_factor: 1`. Retention için `retention_period` **tek başına yetmez**: silme işini compactor yapar → `compactor.retention_enabled: true` + `delete_request_store: filesystem` |
+| 45 | [x] | **`monitoring` namespace'ine PSA `restricted` konulamaz** | App namespace'i `pod-security.kubernetes.io/enforce=restricted` ile etiketli. Aynı etiket monitoring'e konursa node-exporter (hostPath + hostNetwork) admission tarafından reddedilir ve DaemonSet hiç açılmaz | Monitoring namespace'i `restricted` etiketi almıyor; gerekçe `monitoring.tf`'te yorumda. App namespace'i sıkı kalıyor |
+| 46 | [x] | **CRD'li chart + `kubernetes_manifest` çakışması** | Alert kurallarını `kubernetes_manifest` ile apply etmek doğal yol gibi görünüyor, ama o kaynak **plan aşamasında** CRD şemasını API'den okumak zorunda — `PrometheusRule` CRD'si aynı apply'da kurulduğu için ilk plan patlar | Kurallar repoda YAML (`monitoring/alerts/mern-rules.yaml`), Terraform `yamldecode` ile okuyup chart'ın `additionalPrometheusRulesMap` değerine gömüyor. Kural okunabilir kalıyor, CRD sırası sorunu yok |
+| 47 | [x] | **ALB 5xx alarmı kurulmadı (bilinçli sapma)** | `MIMARI.md §7` ALB `HTTPCode_Target_5XX_Count` oranını öngörüyordu. Prometheus'a almak `yet-another-cloudwatch-exporter` + ayrı IRSA rolü ister; CloudWatch tarafında kurmak ise yalnız `data.aws_lb` ile tamamlanmaz — doğru **target group** boyutunun bulunması ve `5XX/RequestCount` için **metric-math** alarmı gerekir. Üstüne SNS e-posta aboneliği kullanıcı onayı olmadan bildirim göndermez → teslimde doğrulanamayan bir dış bağımlılık | Kurulmadı. Aynı arıza sinyali `BackendNotReady` + `PodCrashLooping` ile alınıyor. Prod'a geçiş yolu olarak README'de not edilecek |
+| 48 | [x] | **EKS'te scrape edilemeyen job'lar gürültü üretir** | `kubeControllerManager`, `kubeScheduler`, `kubeEtcd`, `kubeProxy` chart'ta varsayılanda açık; EKS'te control plane AWS tarafında olduğu için hedefler kalıcı "down" görünür ve gerçek arıza gürültüde kaybolur | Dördü de `enabled: false` |
+| 49 | [x] | **Grafana parolası ve Slack webhook'u git'e girmemeli** | Chart'ın `grafana.adminPassword` alanı values dosyasına düz metin ister | Parola `random_password` → `grafana-admin` Secret → `grafana.admin.existingSecret`. Slack: webhook **yok**, hepsi `null` receiver'a düşüyor; `TF_VAR_slack_webhook_url` verilirse ikinci bir values dokümanı `slack-notifications` receiver'ını üretiyor (`api_url_file` + secret mount karmaşıklığı kurulmadı). `Watchdog` her koşulda `null`'a gider — sürekli ateşleyen bir sinyaldir, kanalı kullanılamaz hale getirir |
+
+| 50 | [x] | **`FrontendNotReady` yanlış pozitif verdi — container adı `frontend` değil `nginx`** | Kural `container="frontend"` ile yazılmıştı; frontend Deployment'ında container'ın adı `nginx` (`k8s/base/frontend-deployment.yaml`). Metrik hiç doğmadı, `absent()` dalı devreye girdi ve alarm cluster'da **FIRING** oldu — oysa iki frontend pod'u da 2/2 Running'di | `container="nginx"` olarak düzeltildi, dashboard paneli de aynı şekilde. **Asıl ders madde 42'nin doğrulanması:** `absent()` olmasaydı bu yazım hatası alarmı sessizce hiç ateşlemeyecek, kural "çalışıyor" sanılacaktı. Yanlış pozitif gürültülüdür ama görünür; sessiz alarm görünmez |
+| 51 | [x] | **Backend HTTP isteklerini loglamıyor** | Loki'de backend'in yalnızca 4 satırı vardı: `mongo.connected` ve `server.listening`. `pino` Aşama 1'de eklenmişti ama yalnızca yaşam döngüsü olaylarını yazıyordu; 16 istek atıldıktan sonra bile yeni satır gelmedi — "loglama" panelleri pratikte boştu. Boşluk **Aşama 6 doğrulaması sırasında Loki'de görülerek** bulundu; metrikler bunu göstermez | `pino-http` middleware'i eklendi (`msg: http.request`). Üç ayrıntı: **(1)** `/healthcheck` `autoLogging.ignore` ile dışarıda — probe'lar saniyede birkaç kez gelir, gerçek trafiği boğar ve 14 günlük retention'ı doldurur; **(2)** `customLogLevel` 5xx→`error`, 4xx→`warn` — Grafana'da severity'ye göre filtrelenebiliyor; **(3)** `logger.mjs`'e `redact`: pino-http **tüm istek header'larını** yazar, bu uygulamada auth yok ama loglar Loki'de 14 gün duruyor — bir gün auth eklenirse token'lar sessizce log'a akardı. `authorization`, `cookie`, `set-cookie` maskeli. Aşama 1'in "uygulama mantığına dokunma" kuralı korundu: iş mantığı değil, yalnızca gözlemlenebilirlik eklendi |
+| 52 | [x] | **Alloy açılışta silinmiş helm-hook pod'una takılıyor** | Kurulumdan hemen sonra Alloy `kube-prometheus-stack-admission-patch-*` pod'u için saniyede onlarca `tailer stopped; will retry ... pods not found` uyarısı bastı | Geçici: helm hook pod'u silinirken discovery listesi bir tur bayat kalıyor. Bir sonraki discovery yenilemesinde kendiliğinden geçti (son 60 saniyede **0** uyarı). Yapılandırma değişikliği gerekmedi |
+
+### Grafana neden dışarı açılmadı
+
+ALB Security Group yalnızca `com.amazonaws.global.cloudfront.origin-facing` prefix
+list'ine açık (Aşama 7 maddesi). Grafana için ikinci bir Ingress açmak bu kısıtı
+delerdi. Erişim port-forward ile:
+`kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80`
+Parola: `terraform -chdir=terraform/envs/prod output -raw grafana_admin_password`.
+
+### Dashboard'lar neden grafana.com'dan indirilmiyor
+
+Chart zaten cluster/node/namespace dashboard'larını kendi getiriyor
+(`grafana.defaultDashboardsEnabled`). Ek olarak grafana.com ID'sinden çekmek
+çalışma anında dış kaynağa ve değişen dashboard şemasına bağımlılık yaratırdı.
+Elde yazılan iki dashboard repoda JSON olarak duruyor ve Terraform onları
+`grafana_dashboard=1` label'lı ConfigMap'e yazıyor; sidecar otomatik yüklüyor.
+
+### Aşama 6 doğrulama kanıtları
+
+Statik (lokal, cluster'sız):
+`terraform fmt -recursive` temiz · `terraform validate` (prod) başarılı ·
+`helm template` üç chart için de hatasız (kps'de 31 PrometheusRule, Loki'de tek
+StatefulSet `replicas: 1`, Alloy'da `kind: Deployment` — DaemonSet **yok**) ·
+`promtool check rules` → **9 rules found, SUCCESS** ·
+render edilen Alertmanager config'i base64'ten çözülüp iki yol da doğrulandı
+(webhook boşken `receiver: "null"`, doluyken `slack-notifications` + Watchdog istisnası).
+
+**Cluster üzerinde doğrulandı** (`terraform apply` → *8 added, 0 changed, 0 destroyed*):
+
+| Doğrulama | Sonuç |
+|---|---|
+| `kubectl -n monitoring get pods` | **10/10 Running** (prometheus, alertmanager, grafana, operator, kube-state-metrics, 3 × node-exporter, loki, alloy) |
+| PVC'ler | `prometheus-...-0` **20Gi Bound**, `storage-loki-0` **10Gi Bound**, ikisi de `gp3` |
+| Kapasite | 51 slotun **35'i** dolu (16 boş — HPA 2→6 için yeterli); bellek %53/%32/%39 |
+| **`ruleSelector` tuzağı (madde 41)** | `/api/v1/rules` üç grubu da listeliyor: `mern-workloads`, `mern-etl`, `cluster-health` → **9 kural yüklü** |
+| Prometheus hedefleri | 23 target, **up olmayan 0** (kapatılan dört control-plane job'ı gürültü üretmiyor, madde 48) |
+| Loki log akışı | `{namespace="mern"}` 4 stream; ETL'de `etl.success` JSON satırları `job_name` label'ıyla, backend'de `pino` JSON, mongodb 2000+ satır |
+| **Alloy çoğaltma testi (madde 43)** | Üç sorguda da benzersiz satır = toplam satır → **tekrarlanan 0**. `container` label listesinde `alloy` ve `loki` **yok** (drop kuralı çalışıyor) |
+| Grafana | 3 datasource (Prometheus, Loki, Alertmanager); iki dashboard "MERN DevOps Case" klasöründe; Loki sorgusu Grafana API'sinden **200** |
+| **`absent()` dalı (madde 42)** | Var olmayan bir cronjob için `absent(...)` = **1** → güvenlik ağı gerçekten değerlendiriliyor |
+| `ETLJobMissing` yanlış pozitif yok | Son başarılı koşudan bu yana **2197 sn** (eşik 3900) → sessiz |
+| **Alarm zinciri uçtan uca** | `mern` namespace'ine bilerek CrashLoop'a giren test pod'u kondu → `PodCrashLooping` 5 dk sonra **FIRING** → Alertmanager'da `severity: critical`, `receiver: ["null"]`, `state: active`. Test pod'u silindi |
+| Uygulama etkilenmedi | Test boyunca backend/frontend 2/2, `https://d3istqpjzc491u.cloudfront.net/` **200**, `/api/healthcheck/ready` → `{"mongo":"up"}` |
+
+> **Alarm testi neden `scale=0` veya bozuk imajla yapılmadı:** `kubectl scale deploy/backend
+> --replicas=0` HPA `minReplicas: 2` tarafından hemen geri alınır; bozuk imaj vermek ise
+> `maxUnavailable: 0` rolling update yüzünden eski pod'ları ayakta bıraktığı için
+> `BackendNotReady`'yi hiç tetiklemez — üstelik ikisi de canlı uygulamayı riske atar.
+> Ayrı bir CrashLoop pod'u hem gerçek zinciri kanıtlar hem üretime dokunmaz.
+
+Alınacak ekran görüntüleri (Aşama 8): Grafana "MERN — Servis Durumu" ve
+"ETL — CronJob Sağlığı" dashboard'ları, Prometheus `/alerts` sayfası,
+Alertmanager'da firing alert, `kubectl -n monitoring get pods`.
+
+> **Destroy notu:** Prometheus ve Loki PVC'leri EBS volume tutar. `helm_release`'ler
+> Terraform bağımlılık sırasıyla önce silinir, ama artakalan PVC/volume için
+> `kubectl -n monitoring delete pvc --all` doğrulaması şart — aksi halde VPC destroy'u
+> asılı kalır.

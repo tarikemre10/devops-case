@@ -19,7 +19,15 @@ Case metni: `Case Tanıtım Metni_Tr.txt` · Kabul kriterleri: `README.md` · He
 >   EKS access entry + namespace-scoped `ci-deployer` RBAC, Dependabot.
 >   `terraform apply` ve ilk pipeline koşusu bekliyor.
 >
-> **Sıradaki:** Aşama 6 — Logging, Monitoring, Alerting.
+> · **Aşama 6 tamamlandı ve cluster üzerinde doğrulandı:** monitoring yığını apply
+>   edildi (8 kaynak), 10/10 pod Running, iki PVC gp3'te Bound, 9 alert kuralı
+>   Prometheus'a yüklendi, 23 target'ın hepsi `up`, Loki log alıyor (tekrarlanan
+>   satır **0**), Grafana'da iki dashboard. Alarm zinciri uçtan uca kanıtlandı:
+>   bilerek CrashLoop'a sokulan test pod'u → `PodCrashLooping` FIRING → Alertmanager.
+>   Bulunan bir kural hatası (`FrontendNotReady` container adı) düzeltildi.
+>
+> **Sıradaki:** Aşama 5 pipeline'ının canlı koşusu, Aşama 7 güvenlik listesi,
+> Aşama 8 ekran görüntüleri — ardından `terraform destroy`.
 > Ayrıntılar ve doğrulama kanıtları: `docs/KARSILASILAN_ZORLUKLAR.md`
 
 ---
@@ -328,20 +336,36 @@ Ayrıca: `prod` adlı GitHub Environment (deploy job'ları buna bağlı) ve
 
 ---
 
-## Aşama 6 — Logging, Monitoring, Alerting
+## Aşama 6 — Logging, Monitoring, Alerting ✅ **TAMAMLANDI**
+
+Kurulum tamamen **`terraform/envs/prod/monitoring.tf`** içinde (`helm_release`,
+ALB Controller ile aynı desen) — tek `terraform apply` yığını ayağa kaldırır.
+Chart sürümleri **tam pinli** (`~>` değil): `kube-prometheus-stack 88.5.3`,
+`loki 7.3.0`, `alloy 1.11.1` — `variables.tf`'te değişken olarak.
+
+| Dosya | İçerik |
+|---|---|
+| `monitoring/kube-prometheus-stack.values.yaml` | Prometheus (7g, gp3 20Gi), Alertmanager, Grafana (ClusterIP, `existingSecret`), exporter'lar |
+| `monitoring/loki.values.yaml` | SingleBinary + filesystem + gp3 10Gi, retention 14 gün |
+| `monitoring/alloy.values.yaml` | **Deployment (replicas 1)**, `loki.source.kubernetes`, ns filtresi `mern`+`monitoring` |
+| `monitoring/alerts/mern-rules.yaml` | 9 alert kuralı (3 grup) |
+| `monitoring/dashboards/*.json` | `mern-services`, `etl-cronjob` (cluster/node dashboard'ları chart'tan gelir) |
+| `monitoring/alertmanager-slack.values.yaml.tftpl` | yalnız `TF_VAR_slack_webhook_url` doluysa yüklenir |
 
 - **Loglar**: uygulamalar stdout'a **JSON** yazar — backend `pino` ve ETL `runner.py`
-  **Aşama 1'de eklendi**, bu aşamada kod değişikliği gerekmiyor. Grafana Alloy toplar → Loki → Grafana. Retention 14 gün.
-- **Metrikler**: kube-prometheus-stack (node/pod/kube-state-metrics) + CloudWatch üzerinden ALB 5xx.
-- **Dashboard'lar**: Cluster sağlığı, MERN servis durumu, MongoDB, ETL job başarı geçmişi.
-- **Alert kuralları (kritik olaylar)**:
-  - `PodCrashLooping` (5 dk)
-  - ALB target 5xx oranı > %5 (5 dk)
-  - Backend readiness başarısız > 2 dk
-  - MongoDB PVC doluluk > %80
-  - **ETL CronJob son 1 saatte başarıyla tamamlanmadı** (kabul kriterinin doğrulaması)
-  - Node NotReady / bellek baskısı
-- Alertmanager → Slack webhook (webhook URL git'e girmez).
+  **Aşama 1'de eklendi**, bu aşamada kod değişikliği gerekmedi. Alloy → Loki → Grafana, 14 gün.
+- **Metrikler**: kube-prometheus-stack (node-exporter + kube-state-metrics).
+- **Alert kuralları**: `PodCrashLooping` · `BackendNotReady` · `FrontendNotReady` ·
+  `MongoDiskFilling` · **`ETLJobMissing`** · `ETLJobFailed` · `NodeNotReady` ·
+  `NodeMemoryPressure` · `NodeDiskPressure`.
+- **Bildirim**: Slack webhook yok → hepsi `null` receiver'a düşer, kanıt Alertmanager UI.
+
+**Plandan üç bilinçli sapma** (gerekçeleri `docs/KARSILASILAN_ZORLUKLAR.md` Aşama 6):
+1. ALB 5xx alarmı **kurulmadı** — CloudWatch exporter + IRSA + metric-math maliyeti,
+   aynı sinyal `BackendNotReady`/`PodCrashLooping` ile alınıyor.
+2. Alloy **DaemonSet değil Deployment** — API tabanlı toplamada DaemonSet logları çoğaltır.
+3. Hazır dashboard'lar grafana.com'dan indirilmedi — chart zaten cluster/node
+   dashboard'larını getiriyor; elde yazılan iki dashboard repoda JSON olarak duruyor.
 
 > **Tampon kuralı:** Gün 3 saat 14:00'te bu aşama bitmediyse **Loki + Alloy kesilir**;
 > Prometheus + Alertmanager + `ETLJobMissing` bırakılır. Dokümantasyon ve ekran görüntüleri
