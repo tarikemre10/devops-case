@@ -61,7 +61,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(kube_pod_container_status_ready{namespace=\"mern\",container=\"frontend\"}) or vector(0)"
+          "expr": "sum(kube_pod_container_status_ready{namespace=\"mern\",container=\"nginx\"}) or vector(0)"
         }
       ]
     },

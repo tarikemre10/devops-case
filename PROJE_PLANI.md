@@ -19,12 +19,15 @@ Case metni: `Case Tanıtım Metni_Tr.txt` · Kabul kriterleri: `README.md` · He
 >   EKS access entry + namespace-scoped `ci-deployer` RBAC, Dependabot.
 >   `terraform apply` ve ilk pipeline koşusu bekliyor.
 >
-> · **Aşama 6 yazıldı:** `monitoring/` (3 chart values + 9 alert kuralı + 2 dashboard)
->   ve `terraform/envs/prod/monitoring.tf`. `terraform validate`, `helm template`
->   (üç chart) ve `promtool check rules` yerelde geçti; **cluster üzerinde apply
->   ve doğrulama bekliyor** (Aşama 5 ile aynı apply'da).
+> · **Aşama 6 tamamlandı ve cluster üzerinde doğrulandı:** monitoring yığını apply
+>   edildi (8 kaynak), 10/10 pod Running, iki PVC gp3'te Bound, 9 alert kuralı
+>   Prometheus'a yüklendi, 23 target'ın hepsi `up`, Loki log alıyor (tekrarlanan
+>   satır **0**), Grafana'da iki dashboard. Alarm zinciri uçtan uca kanıtlandı:
+>   bilerek CrashLoop'a sokulan test pod'u → `PodCrashLooping` FIRING → Alertmanager.
+>   Bulunan bir kural hatası (`FrontendNotReady` container adı) düzeltildi.
 >
-> **Sıradaki:** Aşama 5 + 6 apply'ı ve canlı doğrulama, ardından Aşama 7–8.
+> **Sıradaki:** Aşama 5 pipeline'ının canlı koşusu, Aşama 7 güvenlik listesi,
+> Aşama 8 ekran görüntüleri — ardından `terraform destroy`.
 > Ayrıntılar ve doğrulama kanıtları: `docs/KARSILASILAN_ZORLUKLAR.md`
 
 ---
@@ -333,7 +336,7 @@ Ayrıca: `prod` adlı GitHub Environment (deploy job'ları buna bağlı) ve
 
 ---
 
-## Aşama 6 — Logging, Monitoring, Alerting ✅ **YAZILDI**
+## Aşama 6 — Logging, Monitoring, Alerting ✅ **TAMAMLANDI**
 
 Kurulum tamamen **`terraform/envs/prod/monitoring.tf`** içinde (`helm_release`,
 ALB Controller ile aynı desen) — tek `terraform apply` yığını ayağa kaldırır.

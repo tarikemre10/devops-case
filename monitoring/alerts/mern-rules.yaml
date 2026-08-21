@@ -37,10 +37,15 @@ groups:
           summary: "Backend'in hazır (ready) pod'u yok"
           description: "2 dakikadır readiness geçen backend pod'u bulunmuyor; API servis dışı."
 
+      # DİKKAT: container adı "frontend" DEĞİL "nginx"tir
+      # (k8s/base/frontend-deployment.yaml). İlk yazımda "frontend" yazılmıştı;
+      # kural cluster'da yanlış pozitif verdi ve hata böyle yakalandı —
+      # absent() olmasaydı metrik hiç doğmadığı için alarm sessizce hiç
+      # ateşlenmez ve eksiklik fark edilmezdi.
       - alert: FrontendNotReady
         expr: |
-          sum(kube_pod_container_status_ready{namespace="mern",container="frontend"}) < 1
-            or absent(kube_pod_container_status_ready{namespace="mern",container="frontend"})
+          sum(kube_pod_container_status_ready{namespace="mern",container="nginx"}) < 1
+            or absent(kube_pod_container_status_ready{namespace="mern",container="nginx"})
         for: 2m
         labels:
           severity: critical
