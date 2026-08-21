@@ -20,6 +20,10 @@ metadata:
     alb.ingress.kubernetes.io/healthcheck-port: traffic-port
     alb.ingress.kubernetes.io/success-codes: "200"
     alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=60
+    # Varsayılan 300 sn'dir: silinen bir pod'un hedef kaydı 5 dakika "draining"
+    # kalır ve rollout'lar gereksiz uzar. 30 sn, pod'un preStop'ta beklediği
+    # 15 sn ile birlikte devam eden isteklerin bitmesine fazlasıyla yeter.
+    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
 spec:
   ingressClassName: alb
   rules:

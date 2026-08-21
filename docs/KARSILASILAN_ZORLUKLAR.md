@@ -286,10 +286,27 @@ Cluster üzerinde doğrulandı: access entry `username: github-actions` olarak e
 `get nodes` ve başka namespace'te `patch deploy` **no**. Trust policy iki `sub` biçimini
 de kabul ediyor (madde 40).
 
-Pipeline üzerinde doğrulanacaklar: assume-role ile `kubectl -n mern get deploy`
-çalışır / `kubectl get nodes` ve `get secret` **Forbidden**; PR'da deploy job'ı skipped;
-merge'te ECR'de yeni SHA + rollout Complete + smoke JSON `mongo:"up"`;
-merge sonrası CronJob tag'i değişmemiş; `git grep ORIGIN_VERIFY` yalnız placeholder.
+**Pipeline canlı koştu ve doğrulandı** (PR #19 merge'ü, commit `422111a`). Kanıtlar
+cluster ve ECR üzerinden, GitHub Actions arayüzüne bakmadan okunabiliyor:
+
+| Kanıt | Ölçüm |
+|---|---|
+| Build + Trivy + push çalıştı | ECR'de üç repoda da `422111a2d8bc...` tag'i var. Tarama push'tan **önce** yapıldığı için tag'in varlığı taramanın da geçtiğini gösterir |
+| `kubectl set image` + rollout çalıştı | `backend`/`frontend` **revision 2**; eski ReplicaSet'ler `2d9e9c04f433` tag'iyle 0'a çekilmiş, yeni ReplicaSet'ler merge SHA'sıyla 2 replica'da |
+| Otomatik rollback tetiklenmedi | Revizyon 3 yok, çalışan tag merge SHA'sı — yani `rollout status` ve smoke geçti, `rollout undo` hiç çalışmadı |
+| `etl.yml` ayrı olarak koştu | CronJob'ın imajı da merge SHA'sına geçmiş; `etl-29788920` (18:00) eski tag'le, `etl-29788980` (19:00) ve `etl-29789040` (20:00) **yeni tag'le `succeeded: 1`** |
+| ECR ayarları | Üç repo da `IMMUTABLE` + `scanOnPush: true` |
+
+> **Not:** İlk koşuda pipeline OIDC `sub` biçimi yüzünden düştü (madde 40); trust
+> policy düzeltildikten (`afc38c8`) sonraki koşu uçtan uca geçti. Yukarıdaki
+> tag'ler o başarılı koşunun çıktısıdır.
+
+Ayrıca doğrulanmış: `git grep ORIGIN_VERIFY` yalnızca placeholder döndürüyor —
+origin-verify sırrı pipeline'a hiç girmiyor (Aşama 5'in tasarım kararı).
+
+GitHub arayüzünden bakılırsa görülecekler (kayıt için): PR koşusunda `build` ve
+`deploy` job'ları **skipped** (`if: github.event_name != 'pull_request'`),
+master koşusunda smoke adımının `mongo:"up"` çıktısı.
 
 ---
 
@@ -373,3 +390,94 @@ Alertmanager'da firing alert, `kubectl -n monitoring get pods`.
 > Terraform bağımlılık sırasıyla önce silinir, ama artakalan PVC/volume için
 > `kubectl -n monitoring delete pvc --all` doğrulaması şart — aksi halde VPC destroy'u
 > asılı kalır.
+
+---
+
+## Aşama 7 — Güvenlik Kontrol Listesi
+
+Liste **ölçülerek** kapatıldı: her madde için çalışan sistemden bir çıktı alındı.
+Kontrol listesinin kendisi `PROJE_PLANI.md` Aşama 7'de; burada ölçüm komutları ve
+sonuçları var, böylece bağımsız olarak tekrarlanabilir.
+
+| Madde | Komut | Ölçülen sonuç |
+|---|---|---|
+| Git'te düz secret | `git ls-files \| grep -E "\.tfstate\|\.tfvars$\|kubeconfig\|config\.env\|\.pem$\|\.key$"` | **boş** |
+| Container sertliği | `kubectl -n mern get pods -o json` → securityContext | 5/5 pod `roFS=true`, `privEsc=false`, `drop=[ALL]`; pod seviyesinde `runAsNonRoot=true` |
+| Gerçek kullanıcı | `kubectl -n mern exec deploy/backend -- id` | `uid=1000(node) gid=1000(node)` |
+| NetworkPolicy **etkisi** | `mern`'e etiketsiz test pod'u + `nc -z -w4` | `mongodb-0.mongodb:27017` → **ENGELLENDİ**, `backend:5050` → **ENGELLENDİ** |
+| NetworkPolicy ön koşulu | `kubectl -n kube-system get ds aws-node -o json` | `aws-eks-nodeagent --enable-network-policy=true` · `NETWORK_POLICY_ENFORCING_MODE=standard` |
+| Trivy bloklayıcı | `.github/workflows/mern.yml` | `severity: HIGH,CRITICAL` · `ignore-unfixed: true` · **`exit-code: "1"`**; `load: true` → Trivy → `docker push` sırası |
+| MongoDB kapalı | `kubectl -n mern get svc mongodb` | `ClusterIP`, `clusterIP: None` (headless), Ingress yok |
+| MongoDB auth | pod içinden kimliksiz `listDatabases` | `MongoServerError: Command listDatabases requires authentication` |
+| CloudFront TLS | `curl http://<id>.cloudfront.net/` | **301** |
+| ALB doğrudan erişim | `curl http://k8s-mern-...elb.amazonaws.com/` | **403** |
+| Node role yetkisi | `aws iam list-attached-role-policies` | Yalnız `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, `AmazonEC2ContainerRegistryReadOnly` |
+| IRSA rolleri | `aws iam list-roles` | `...-ebs-csi`, `...-alb-controller`, `...-github-actions` ayrı ayrı |
+| ECR | `aws ecr describe-repositories` | 3 repo: `scanOnPush=True`, `IMMUTABLE` |
+| OIDC | `aws iam get-role --role-name mern-devops-case-github-actions` | Principal `token.actions.githubusercontent.com`, Action `sts:AssumeRoleWithWebIdentity` |
+| Uzun ömürlü anahtar | `grep -rn "secrets\." .github/workflows/` | **hiç eşleşme yok** — workflow'lar yalnız `vars.*` kullanıyor |
+| Root MFA | `aws iam get-account-summary` | `AccountMFAEnabled = 1` |
+| Billing alarmı | `aws budgets describe-budgets` | *My Monthly Cost Budget* — **40 USD** |
+| Monitoring dışa kapalı | `kubectl -n monitoring get svc,ingress` | 12 Service'in tamamı `ClusterIP`, **Ingress yok** |
+
+### `git grep` ile bulunan üç "secret benzeri" satır — üçü de gerçek sır değil
+
+Tarama şu üçünü döndürüyor; bilerek bırakıldılar:
+
+| Dosya | Neden sorun değil |
+|---|---|
+| `docker-compose.yml:41` | Yalnız **lokal geliştirme** varsayılanı (`${MONGO_PASSWORD:-devpassword}`); cluster'a hiç gitmiyor |
+| `mern-project/server/.env-example` | Placeholder (`<user>:<pass>`), gerçek değer değil |
+| `terraform/envs/prod/main.tf:374` | `format()` şablonu; parola `random_password.mongo_root.result` değişkeninden geliyor, dosyada düz metin yok |
+
+### Bilinçli istisna: `node-exporter` hostNetwork + hostPath
+
+"Tüm container'lar non-root/read-only" maddesi **uygulama namespace'i** için geçerlidir.
+`node-exporter` node metriğini okumak için `hostNetwork` ve `/proc`, `/sys`, `/` hostPath
+mount'larına ihtiyaç duyar — başka yolu yoktur. Bu yüzden `monitoring` namespace'ine PSA
+`restricted` etiketi konmaz (madde 45), `mern` namespace'ine konur. Sınır net: sertlik
+uygulama iş yüklerinde tavizsiz, gözlemlenebilirlik ajanında gerektiği kadar gevşek.
+
+---
+
+## Dayanıklılık testleri — "pod ölürse ne olur, node ölürse ne olur"
+
+Deployment/PDB/probe yapılandırmaları yazılmıştı ama **kendini iyileştirme davranışı
+hiç ölçülmemişti**. Yapılandırmanın varlığı davranışın kanıtı değildir; iki test
+yapıldı ve ikisi de gerçek kusur ortaya çıkardı.
+
+### Test 1 — Pod ölümü (kesintisiz)
+
+`backend` pod'larından biri silindi; bu sırada public URL'e 0.5 sn aralıkla 80 istek.
+
+**Sonuç: 80/80 → `200`.** Pod otomatik yeniden yaratıldı, kesinti olmadı.
+Replica 2 + `maxUnavailable: 0` + readiness probe birlikte çalışıyor.
+
+### Test 2 — Node devre dışı (`kubectl drain`) — **kusur bulundu**
+
+`ip-10-0-2-126` (eu-central-1a) drain edildi; üzerinde backend, frontend,
+kube-state-metrics ve Prometheus vardı. Eşzamanlı 100 istek.
+
+**İlk ölçüm: 92 × `200`, 3 × `502`, 5 × bağlantı hatası.** Pod'lar kalan iki node'a
+düzgün taşındı, ama **~8 istek düştü**.
+
+| # | Durum | Sorun | Çözüm |
+|---|---|---|---|
+| 53 | [x] | **ALB hedefi silinmeden pod ölüyor → 502** | Pod `SIGTERM`'i, endpoint kaydı ALB'den düşmeden alıyor. Kubernetes'in endpoint kaldırması ile ALB'nin deregister çağrısının yayılması eşzamanlı değil; ALB birkaç saniye daha ölmekte olan hedefe istek göndermeye devam ediyor. Yapılandırmaya bakarak fark edilmesi zor — yalnızca canlı drain testinde görünüyor | Frontend'e `preStop: sleep 15`, backend'e `preStop: sleep 5` (backend ALB'ye değil nginx'e bakıyor, endpoint yayılımı daha hızlı). Ayrıca Ingress'e `deregistration_delay.timeout_seconds=30` — varsayılan 300 sn, hedef gereksiz yere 5 dakika "draining" kalıyordu. **Tekrar ölçüm: 110/110 → `200`, kesinti tamamen kalktı** |
+| 54 | [x] | **`topologySpreadConstraints` hiç yoktu — `MIMARI.md` ise "pod anti-affinity" olduğunu yazıyordu** | Replica'ların node'lara dağılması yalnızca scheduler'ın varsayılan davranışına kalmıştı; garanti değildi. Doküman ile gerçek ayrışmıştı | backend ve frontend'e `maxSkew: 1`, `topologyKey: kubernetes.io/hostname` eklendi. **`whenUnsatisfiable: ScheduleAnyway` bilinçli:** HPA backend'i 6'ya ölçekliyor, node 3 tane — katı bir kural (`DoNotSchedule` / `requiredDuringScheduling`) 4. pod'dan itibaren `Pending` üretir ve **ölçeklemeyi kilitler**. Yumuşak kural normalde yayar, yer yoksa yine de yerleştirir. `MIMARI.md` gerçeğe göre düzeltildi |
+| 55 | [ ] | **EBS PVC'si AZ'ye bağlıdır — tek node'lu AZ tek hata noktasıdır** | Drain sırasında `prometheus-...-0` **`Pending`** kaldı. Sebep: PVC'si `eu-central-1a`'da ve o AZ'de tek node var. `uncordon` ile geri geldi. Aynı risk MongoDB için de var — PVC'si `eu-central-1b`'de; orada iki node olduğu için **node** kaybını atlatır, ama **AZ** kaybını atlatamaz | Kabul edilen sınır (kapsam kararı: tek replica StatefulSet). Prod yolu: AZ başına en az iki node, MongoDB ReplicaSet (her replica kendi PVC'siyle farklı AZ'de) ya da AZ-bağımsız EFS/DocumentDB. README §9'da yazılı |
+
+### Ölçülen dayanıklılık özeti
+
+| Senaryo | Davranış | Ölçüm |
+|---|---|---|
+| Pod ölümü | Otomatik yeniden yaratma, kesinti yok | 80/80 → 200 |
+| Node devre dışı | Pod'lar kalan node'lara taşınır, kesinti yok | 110/110 → 200 (düzeltme sonrası) |
+| Kötü deploy | `maxUnavailable: 0` + smoke başarısızsa otomatik `rollout undo` | Aşama 5 |
+| Trafik artışı | Backend HPA 2→6 | Aşama 4 |
+| Planlı bakım | PDB `minAvailable: 1` — drain en fazla bir replica'yı alır | Test 2'de doğrulandı |
+| **AZ kaybı** | **MongoDB ve Prometheus geri gelemez** (EBS AZ-bağımlı) | Madde 55 — bilinçli sınır |
+
+> **Testin asıl dersi:** "replica 2 + PDB + probe yazdık" demek dayanıklılık kanıtı
+> değildir. İlk drain testi olmasaydı 502'ler teslimde değil, gerçek bir bakım
+> penceresinde ortaya çıkardı.
