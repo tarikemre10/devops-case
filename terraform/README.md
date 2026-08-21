@@ -46,14 +46,16 @@ terraform output app_url            # ekran görüntülerinde görünecek HTTPS 
 
 ## Maliyet ve gün sonu kapatma
 
-Cluster ayaktayken yaklaşık **5.9 $/gün**:
+Cluster ayaktayken yaklaşık **7.2 $/gün** (Aşama 6 monitoring dahil):
 
 | Kalem | Günlük |
 |---|---|
 | EKS control plane (0.10 $/saat) | 2.40 $ |
-| 2 × `t3.medium` | 2.07 $ |
-| NAT Gateway | 1.25 $ |
-| EBS (2 × 30 GB gp3) | 0.19 $ |
+| 3 × `t3.medium` | 3.11 $ |
+| NAT Gateway ×1 | 1.25 $ |
+| EBS — node diskleri (3 × 30 GB gp3) | 0.29 $ |
+| EBS — PVC'ler (Prometheus 20Gi + Loki 10Gi + Mongo 10Gi) | 0.13 $ |
+| ALB | ~0.60 $ |
 
 Çalışılmayan saatlerde **`envs/prod` destroy edilir**. Node'ları 0'a çekmek
 yetmez: control plane + NAT çalışmaya devam eder ve maliyetin yalnızca %38'i
@@ -61,6 +63,8 @@ kurtulur.
 
 ```bash
 # Gün sonu
+# ÖNCE monitoring PVC'leri: EBS volume'ları asılı kalırsa VPC destroy'u tıkanır
+kubectl -n monitoring delete pvc --all
 cd envs/prod && terraform destroy      # ~5 dk, ~0 $/gün'e iner
 
 # Ertesi gün
