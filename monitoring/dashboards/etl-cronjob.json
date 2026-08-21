@@ -1,0 +1,166 @@
+{
+  "title": "ETL — CronJob Sağlığı",
+  "uid": "mern-etl-cronjob",
+  "tags": ["mern", "etl", "devops-case"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" }
+      },
+      {
+        "name": "logs",
+        "type": "datasource",
+        "query": "loki",
+        "current": { "text": "Loki", "value": "Loki" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Son başarılı koşudan bu yana",
+      "description": "ETLJobMissing alert'i 65 dakikada ateşler. README kabul kriteri: ETL saatte 1 çalışmalı.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 3600 },
+              { "color": "red", "value": 3900 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - kube_cronjob_status_last_successful_time{namespace=\"mern\",cronjob=\"etl\"}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Son 24 saatte başarılı Job",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(kube_job_status_succeeded{namespace=\"mern\"}[24h])) or vector(0)"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Son 24 saatte başarısız Job",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(kube_job_status_failed{namespace=\"mern\"}[24h])) or vector(0)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Aktif ETL Job'ları",
+      "description": "Saat başı kısa bir tepe beklenir; sürekli 1 kalması takılmış Job demektir (concurrencyPolicy: Forbid).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 5 },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 20, "drawStyle": "bars" } }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "aktif",
+          "expr": "sum(kube_job_status_active{namespace=\"mern\"}) or vector(0)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Job tamamlanma süresi",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 5 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "{{job_name}}",
+          "expr": "kube_job_status_completion_time{namespace=\"mern\"} - kube_job_status_start_time{namespace=\"mern\"}"
+        }
+      ]
+    },
+    {
+      "type": "logs",
+      "title": "ETL logları (JSON)",
+      "description": "runner.py yapılandırılmış JSON yazar; `| json` ile alanlar ayrıştırılır.",
+      "datasource": { "type": "loki", "uid": "${logs}" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 12 },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{namespace=\"mern\", container=\"etl\"} | json"
+        }
+      ]
+    },
+    {
+      "type": "logs",
+      "title": "Backend logları (pino JSON)",
+      "datasource": { "type": "loki", "uid": "${logs}" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{namespace=\"mern\", container=\"backend\"} | json"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+# Aşama 6 — kritik olay alert kuralları.
+#
+# Bu dosya doğrudan kubectl ile apply EDİLMEZ: terraform/envs/prod/monitoring.tf
+# `yamldecode` ile okur ve kube-prometheus-stack'in `additionalPrometheusRulesMap`
+# değerine gömer. Böylece kural repoda okunabilir YAML olarak durur, ama
+# Terraform'un CRD'lerle plan-time şema sorunu yaşayan `kubernetes_manifest`
+# kaynağına ihtiyaç kalmaz.
+#
+# ÖN KOŞUL: values dosyasındaki `ruleSelectorNilUsesHelmValues: false`.
+# O bayrak olmadan Prometheus bu kuralları SESSİZCE yüklemez (doğrulama:
+# curl localhost:9090/api/v1/rules | jq '.data.groups[].name').
+
+groups:
+  - name: mern-workloads
+    rules:
+      - alert: PodCrashLooping
+        expr: increase(kube_pod_container_status_restarts_total{namespace="mern"}[10m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.namespace }}/{{ $labels.pod }} sürekli yeniden başlıyor"
+          description: "{{ $labels.container }} son 10 dakikada yeniden başladı."
+
+      # `sum(...) < 1` ve `absent(...)` BİRLİKTE gerekli: tüm backend pod'ları
+      # yok olursa (ImagePullBackOff, node kaybı) zaman serisi tamamen kaybolur
+      # ve `== 0` biçimindeki bir ifade hiç değerlendirilmez — alarm sessizce
+      # hiç ateşlenmez. Sessiz alarm, alarm olmamasından kötüdür.
+      - alert: BackendNotReady
+        expr: |
+          sum(kube_pod_container_status_ready{namespace="mern",container="backend"}) < 1
+            or absent(kube_pod_container_status_ready{namespace="mern",container="backend"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend'in hazır (ready) pod'u yok"
+          description: "2 dakikadır readiness geçen backend pod'u bulunmuyor; API servis dışı."
+
+      - alert: FrontendNotReady
+        expr: |
+          sum(kube_pod_container_status_ready{namespace="mern",container="frontend"}) < 1
+            or absent(kube_pod_container_status_ready{namespace="mern",container="frontend"})
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Frontend'in hazır pod'u yok"
+
+      - alert: MongoDiskFilling
+        expr: |
+          kubelet_volume_stats_used_bytes{namespace="mern"}
+            / kubelet_volume_stats_capacity_bytes{namespace="mern"} > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PVC {{ $labels.persistentvolumeclaim }} %80'in üzerinde dolu"
+          description: "Doluluk: {{ $value | humanizePercentage }}."
+
+  - name: mern-etl
+    rules:
+      # README kabul kriterinin ("ETL saatte 1 çalışmalı") tek gerçek doğrulaması.
+      # Bir web servisi çökerse kullanıcı fark eder; bir CronJob sessizce
+      # çalışmayı bırakırsa kimse fark etmez.
+      #
+      # absent(...) şart: CronJob HİÇ çalışmadıysa metrik hiç doğmaz ve
+      # zaman farkı ifadesi boş küme döner.
+      - alert: ETLJobMissing
+        expr: |
+          (time() - kube_cronjob_status_last_successful_time{namespace="mern",cronjob="etl"} > 3900)
+            or absent(kube_cronjob_status_last_successful_time{namespace="mern",cronjob="etl"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ETL CronJob son 65 dakikada başarıyla tamamlanmadı"
+          description: "Saatlik ETL çalışmıyor ya da hiç başarılı koşusu yok."
+
+      - alert: ETLJobFailed
+        expr: increase(kube_job_status_failed{namespace="mern"}[1h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ETL Job'ı başarısız oldu ({{ $labels.job_name }})"
+
+  - name: cluster-health
+    rules:
+      - alert: NodeNotReady
+        expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node {{ $labels.node }} NotReady"
+
+      - alert: NodeMemoryPressure
+        expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.node }} bellek baskısı altında"
+
+      - alert: NodeDiskPressure
+        expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.node }} disk baskısı altında"

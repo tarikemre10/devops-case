@@ -269,7 +269,8 @@ mern namespace: varsayılan tüm ingress/egress kapalı, üstüne:
 │   │                                   # vpc/eks/irsa için terraform-aws-modules (ADR 12)
 │   ├── envs/prod/                      # backend.tf (S3 native lock), VPC+EKS+ECR+IAM
 │   └── envs/edge/                      # CloudFront — Aşama 4'ten SONRA apply
-├── monitoring/                         # values.yaml + PrometheusRule + dashboard json
+├── monitoring/                         # 3 chart values + alerts/mern-rules.yaml
+│                                       # + dashboards/*.json (Terraform okur)
 ├── .github/workflows/{mern.yml,etl.yml}
 ├── docs/
 │   ├── KARSILASILAN_ZORLUKLAR.md
@@ -305,22 +306,47 @@ graph LR
 
 ## 7. Gözlemlenebilirlik
 
-**Loglar:** uygulama stdout → Grafana Alloy (DaemonSet) → Loki → Grafana. Retention 14 gün.
+**Loglar:** uygulama stdout → Grafana Alloy → Loki → Grafana. Retention 14 gün.
 Backend `pino` ile JSON log; ETL `runner.py` ile JSON log.
 
-**Metrikler:** kube-prometheus-stack (node-exporter, kube-state-metrics) + CloudWatch'tan
-ALB `HTTPCode_Target_5XX_Count`.
+> **Sapma:** Alloy **DaemonSet değil, tek replica Deployment** olarak çalışır.
+> `loki.source.kubernetes` logları hostPath'ten değil Kubernetes API'sinden okur;
+> DaemonSet'te her node'daki instance tüm eşleşen pod'ları toplar ve **aynı satır
+> node sayısı kadar yazılır**. Çözüm ya Alloy clustering ya tek instance'tır.
 
-**Alert kuralları** (`monitoring/PrometheusRule.yaml` → Alertmanager → Slack):
+**Metrikler:** kube-prometheus-stack (node-exporter, kube-state-metrics).
+Üçü de EKS'te scrape edilemediği için `kubeControllerManager`, `kubeScheduler`,
+`kubeEtcd`, `kubeProxy` job'ları kapatılır (aksi halde kalıcı "down" hedef gürültüsü).
+
+> **Sapma:** ALB `HTTPCode_Target_5XX_Count` **Prometheus'a alınmadı**. Metriğin
+> Prometheus'a girmesi `yet-another-cloudwatch-exporter` + ayrı IRSA rolü gerektirir;
+> oran alarmı ayrıca doğru **target group** boyutunu ve metric-math'i ister. Aynı
+> arıza sinyali `BackendNotReady` + `PodCrashLooping` ile zaten alınıyor.
+
+**Alert kuralları** (`monitoring/alerts/mern-rules.yaml` → Alertmanager):
 
 | Alert | Koşul | Severity |
 |---|---|---|
 | `PodCrashLooping` | restart artışı > 0, 5 dk | critical |
-| `BackendHighErrorRate` | ALB target 5xx oranı > %5, 5 dk | critical |
-| `BackendNotReady` | readiness fail > 2 dk | critical |
-| `MongoDiskFilling` | PVC doluluk > %80 | warning |
-| **`ETLJobMissing`** | **son 1 saatte başarılı job yok** | critical |
+| `BackendNotReady` | hazır backend pod'u yok (`sum(...) < 1 or absent(...)`), 2 dk | critical |
+| `FrontendNotReady` | hazır frontend pod'u yok, 2 dk | critical |
+| `MongoDiskFilling` | PVC doluluk > %80, 10 dk | warning |
+| **`ETLJobMissing`** | **65 dk'dır başarılı job yok — ya da hiç olmamış (`absent`)** | critical |
+| `ETLJobFailed` | son 1 saatte başarısız Job | warning |
 | `NodeNotReady` | node NotReady > 5 dk | critical |
+| `NodeMemoryPressure` / `NodeDiskPressure` | node baskı altında > 5 dk | warning |
+
+> `absent(...)` iki kuralda **zorunlu**: tüm pod'lar yok olduğunda ya da CronJob hiç
+> çalışmadığında zaman serisi kaybolur ve `== 0` / `> 3900` biçimindeki ifade hiç
+> değerlendirilmez — alarm sessizce ateşlenmez. Sessiz alarm, alarm olmamasından kötüdür.
+
+**Bildirim:** Slack webhook'u bu teslimde **yok**; tüm alert'ler `null` receiver'a düşer
+ve kanıt Alertmanager UI'daki firing listesidir. `TF_VAR_slack_webhook_url` verilirse
+Terraform `slack-notifications` receiver'ını üretir (`Watchdog` hariç tutulur).
+
+**Erişim:** Grafana dışarı **açılmaz** — ALB Security Group yalnız CloudFront prefix
+list'ine açık, ikinci bir public giriş §güvenlik listesini bozar.
+`kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80`.
 
 > `ETLJobMissing` mimarinin en kritik alert'idir: bir web servisi çökerse kullanıcı fark eder,
 > bir CronJob sessizce çalışmayı bırakırsa **kimse fark etmez**. README'deki "saatte 1 çalışmalı"

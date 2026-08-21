@@ -1,0 +1,172 @@
+# kube-prometheus-stack — Aşama 6
+#
+# Chart sürümü terraform/envs/prod/variables.tf'te TAM olarak pinlidir
+# (var.kube_prometheus_stack_version). Burada sürüm yazmayın.
+#
+# Alert kuralları bu dosyada DEĞİL, monitoring/alerts/mern-rules.yaml'da;
+# Terraform onu okuyup `additionalPrometheusRulesMap` olarak enjekte eder.
+
+# ---------------------------------------------------------------------------
+# EKS'te scrape EDİLEMEYEN bileşenler
+# ---------------------------------------------------------------------------
+# Control plane AWS tarafında yönetiliyor; bu job'lar açık kalırsa hedefler
+# kalıcı olarak "down" görünür ve gerçek arızayı gürültüde kaybederiz.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Prometheus
+# ---------------------------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    retentionSize: 15GB
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+
+    # KRİTİK: bu dört bayrak `false` olmadan Prometheus YALNIZCA chart'ın kendi
+    # ürettiği kaynakları toplar. Dışarıdan gelen PrometheusRule / ServiceMonitor
+    # hata vermeden, SESSİZCE yok sayılır — Aşama 6'nın en olası tuzağı budur.
+    # Doğrulama: curl localhost:9090/api/v1/rules | jq '.data.groups[].name'
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+      limits:
+        memory: 2Gi
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+
+# ---------------------------------------------------------------------------
+# Alertmanager
+# ---------------------------------------------------------------------------
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 20m
+        memory: 96Mi
+      limits:
+        memory: 192Mi
+    # Alert geçmişi 3 günlük bir demoda kalıcı diske değmez; PVC'siz emptyDir
+    # kullanmak destroy'u da kolaylaştırır.
+    storage: {}
+
+  # Slack webhook'u YOK (bilinçli karar, PROJE_PLANI Aşama 6).
+  # Tüm alert'ler "null" receiver'a düşer; kanıt Alertmanager UI'daki firing
+  # listesidir. var.slack_webhook_url doldurulursa Terraform bu bloğun üzerine
+  # ikinci bir values dokümanı bindirip slack-notifications receiver'ını üretir.
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ["alertname", "namespace"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: "null"
+      routes:
+        - matchers: ['alertname = "Watchdog"']
+          receiver: "null"
+    receivers:
+      - name: "null"
+
+# ---------------------------------------------------------------------------
+# Grafana
+# ---------------------------------------------------------------------------
+grafana:
+  # Parola git'e girmez: Terraform random_password üretir, Secret'a yazar.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+
+  # Dışarı AÇILMAZ. ALB Security Group yalnız CloudFront prefix list'ine açık;
+  # ikinci bir public giriş Aşama 7 güvenlik listesini bozar. Erişim:
+  #   kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false
+
+  # Kalıcı disk yok: dashboard'lar ConfigMap'ten (sidecar) geliyor, kullanıcı
+  # tarafında saklanacak durum kalmıyor. Yeniden kurulumda hiçbir şey kaybolmaz.
+  persistence:
+    enabled: false
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+    datasources:
+      enabled: true
+
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      access: proxy
+      url: http://loki.monitoring.svc.cluster.local:3100
+      isDefault: false
+      jsonData:
+        maxLines: 1000
+
+# ---------------------------------------------------------------------------
+# Exporter'lar
+# ---------------------------------------------------------------------------
+kube-state-metrics:
+  # ETL alert'i kube_cronjob_status_last_successful_time metriğine dayanıyor;
+  # cronjob/job kaynakları varsayılanda açık, açıkça yazılıyor ki kimse kapatmasın.
+  metricLabelsAllowlist:
+    - pods=[app.kubernetes.io/name]
+  resources:
+    requests:
+      cpu: 20m
+      memory: 96Mi
+    limits:
+      memory: 192Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 48Mi
+    limits:
+      memory: 96Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi

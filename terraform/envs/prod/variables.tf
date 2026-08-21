@@ -156,3 +156,45 @@ variable "mongo_database" {
   type        = string
   default     = "sample_training"
 }
+
+# ---------------------------------------------------------------------------
+# Aşama 6 — Monitoring
+# ---------------------------------------------------------------------------
+
+# Chart sürümleri TAM olarak pinlenir (`~>` değil): "~> 88.5" apply gününe göre
+# farklı bir chart çeker ve tekrarlanabilirlik iddiası çöker. Yükseltme bilinçli
+# bir commit olmalıdır.
+variable "kube_prometheus_stack_version" {
+  description = "prometheus-community/kube-prometheus-stack chart sürümü (tam pin)."
+  type        = string
+  default     = "88.5.3"
+}
+
+variable "loki_version" {
+  description = "grafana/loki chart sürümü (tam pin)."
+  type        = string
+  default     = "7.3.0"
+}
+
+variable "alloy_version" {
+  description = "grafana/alloy chart sürümü (tam pin)."
+  type        = string
+  default     = "1.11.1"
+}
+
+variable "slack_webhook_url" {
+  description = <<-EOT
+    Alertmanager Slack webhook URL'i. BOŞ bırakılırsa (varsayılan) tüm alert'ler
+    "null" receiver'a düşer ve kanıt Alertmanager UI'daki firing listesi olur.
+    Değer git'e YAZILMAZ: `TF_VAR_slack_webhook_url` ile verilir.
+  EOT
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "slack_channel" {
+  description = "slack_webhook_url doluysa alert'lerin gideceği kanal."
+  type        = string
+  default     = "#alerts"
+}
