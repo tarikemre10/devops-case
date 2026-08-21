@@ -1,0 +1,59 @@
+# README kabul kriteri: "ETL.py file should run every 1 hour".
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: etl
+  labels:
+    app.kubernetes.io/name: etl
+    app.kubernetes.io/component: batch
+spec:
+  schedule: "0 * * * *" # her saat başı (UTC — cluster saati)
+  # Forbid: bir önceki koşu bitmediyse yenisi başlatılmaz. Allow olsaydı
+  # yavaş bir koşu üst üste binerek api.github.com'a paralel istek yağdırırdı.
+  concurrencyPolicy: Forbid
+  # Controller bir süre çalışmazsa (node değişimi vb.) kaçırılan koşu ancak
+  # 5 dakika içindeyse telafi edilir; yoksa atlanır. Bu alan olmadan uzun bir
+  # kesinti sonrası birikmiş koşular arka arkaya tetiklenir.
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600 # asılı kalan koşu sonsuza kadar sürmesin
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: etl
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: etl
+              image: mern-etl # tag overlay'de `images:` ile verilir
+              env:
+                - name: PYTHONUNBUFFERED
+                  value: "1"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}

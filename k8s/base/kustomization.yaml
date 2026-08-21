@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Namespace burada TANIMLANMAZ: onu Terraform yaratıyor (ADR 10 secret'ları
+# da aynı namespace'e yazıyor). İkisi de sahiplenirse apply çakışır.
+# Hedef namespace overlay'de `namespace:` alanıyla verilir.
+
+resources:
+  # Uygulama sırası bağımlılık zincirini izler:
+  # mongodb → backend → frontend → ingress → cronjob
+  - configmap.yaml
+  - mongodb-service.yaml
+  - mongodb-statefulset.yaml
+  - backend-deployment.yaml
+  - backend-service.yaml
+  - backend-hpa.yaml
+  - backend-pdb.yaml
+  - frontend-deployment.yaml
+  - frontend-service.yaml
+  - frontend-pdb.yaml
+  - ingress.yaml
+  - etl-cronjob.yaml
+  - networkpolicy.yaml
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: mern

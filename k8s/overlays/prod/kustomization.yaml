@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Namespace'i Terraform yarattı; burada yalnızca hedef olarak gösteriliyor.
+namespace: mern
+
+resources:
+  - ../../base
+
+patches:
+  - path: ingress-patch.yaml
+
+# Tag = commit SHA. Aşama 5'te CI şu komutla günceller:
+#   kustomize edit set image mern-server=<ecr>/mern-server:$GITHUB_SHA
+# Registry adresi: terraform -chdir=terraform/envs/prod output ecr_registry_url
+images:
+  - name: mern-server
+    newName: 182399678722.dkr.ecr.eu-central-1.amazonaws.com/mern-devops-case/mern-server
+    newTag: 2d9e9c04f433
+  - name: mern-client
+    newName: 182399678722.dkr.ecr.eu-central-1.amazonaws.com/mern-devops-case/mern-client
+    newTag: 2d9e9c04f433
+  - name: mern-etl
+    newName: 182399678722.dkr.ecr.eu-central-1.amazonaws.com/mern-devops-case/mern-etl
+    newTag: 2d9e9c04f433
+
+# Not: imagePullPolicy açıkça yazılmaz. Tag `latest` olmadığı için
+# Kubernetes varsayılanı zaten IfNotPresent'tır ve ECR repoları IMMUTABLE
+# olduğu için aynı tag'in içeriği hiç değişmez — güvenli.

@@ -3,10 +3,19 @@
 Bu doküman, case metnindeki gereklilikleri somut aşamalara ve uyulacak kurallara çevirir.
 Case metni: `Case Tanıtım Metni_Tr.txt` · Kabul kriterleri: `README.md` · Hedef mimari: `MIMARI.md`
 
-> **Durum:** **Aşama 1 ve 2 tamamlandı ve doğrulandı.** `docker compose up` ile sistem
-> uçtan uca çalışıyor, Cypress e2e üretim artefaktına karşı 3/3 geçiyor, üç imaj da
-> non-root ve Trivy'de **0 HIGH/CRITICAL** bulgu veriyor.
-> Aşama 0 sürüyor (AWS hesabı), Aşama 3 ve sonrası planlanmış durumda.
+> **Durum:** **Aşama 0–4 tamamlandı ve cluster üzerinde doğrulandı.**
+> **Uygulama canlı: https://d3istqpjzc491u.cloudfront.net**
+> · Uygulama `docker compose up` ile uçtan uca çalışıyor, Cypress e2e üretim
+>   artefaktına karşı 3/3 geçiyor, üç imaj da non-root ve Trivy'de **0 HIGH/CRITICAL**.
+> · EKS 1.34 cluster'ı Terraform ile kuruldu ve doğrulandı (EBS CSI test PVC'si
+>   `Bound`, `kubectl top` çalışıyor, ECR ve GitHub OIDC rolü hazır).
+> · `k8s/base` + `k8s/overlays/prod` EKS'e uygulandı: 5 pod Running, PVC gp3'te Bound,
+>   dört README kabul kriteri de doğrulandı (Mongo bağlı · tüm endpoint'ler · tüm sayfalar ·
+>   ETL saatte bir). NetworkPolicy gerçekten engelliyor, HPA metrik alıyor.
+> · CloudFront (`envs/edge`) apply edildi: public HTTPS ayakta, ALB'ye doğrudan erişim 403.
+> · **Maliyet:** cluster hâlâ çalışıyor — ekran görüntüleri alındıktan sonra `destroy` şart.
+>
+> **Sıradaki:** Aşama 5 — CI/CD (GitHub Actions).
 > Ayrıntılar ve doğrulama kanıtları: `docs/KARSILASILAN_ZORLUKLAR.md`
 
 ---
@@ -16,8 +25,8 @@ Case metni: `Case Tanıtım Metni_Tr.txt` · Kabul kriterleri: `README.md` · He
 | Alan | Karar | Gerekçe |
 |---|---|---|
 | Bulut | **AWS** (`eu-central-1`) | EKS + ECR + IAM/IRSA olgun, case'te serbest bırakılmış; Frankfurt en düşük gecikme |
-| Orkestrasyon | **Kubernetes (EKS)**, managed node group **3 × `t3.medium`** | Case'in açık gerekliliği; boyutlandırma gerekçesi aşağıda |
-| IaC | **Terraform** (remote state: S3 + DynamoDB lock) | Modüler, versiyonlanabilir |
+| Orkestrasyon | **Kubernetes (EKS 1.34)**, managed node group **3 × `t3.medium`** | Case'in açık gerekliliği. Kota 5→16'ya çıkarıldıktan sonra plandaki 3 node'a dönüldü; sürüm seçimi bir maliyet kararı — gerekçeler aşağıda |
+| IaC | **Terraform 1.15** (remote state: S3, **native lockfile** — DynamoDB yok) | Modüler, versiyonlanabilir; `use_lockfile` ile bir kaynak eksik |
 | CI/CD | **GitHub Actions** + OIDC federated role | Repo GitHub'da teslim edilecek, uzun ömürlü anahtar yok |
 | Registry | **Amazon ECR** | Cluster ile aynı hesapta, scan-on-push |
 | Manifest yönetimi | **Kustomize**, tek `overlays/prod` | Helm'e göre daha az soyutlama, review'da okunur |
@@ -65,6 +74,8 @@ Gün 2'yi tek başına kilitleyebilecek risk budur.
 4. **Service Quotas kontrolü** — yeni hesaplarda `Running On-Demand Standard (A, C, D, H, I, M, R, T, Z) instances`
    kotası düşük gelebilir. `eu-central-1`'de en az 6 vCPU (3 × `t3.medium`) olduğunu doğrula.
    Artırma talebi 24–48 saat sürer; bunu Gün 2 sabahı öğrenmek kabul edilemez.
+   **Bu projede gerçekleşti:** kota 5 çıktı, geçici olarak 2 node'a inildi,
+   artırım sonrası (16 vCPU) plandaki 3 node'a dönüldü.
 5. Bölge sabiti: **`eu-central-1`**.
 
 **Çıktı:** `aws sts get-caller-identity` çalışıyor, bütçe alarmı kurulu, kota yeterli.
@@ -83,29 +94,55 @@ Gün 2'yi tek başına kilitleyebilecek risk budur.
 
 Teslim ekran görüntüleri alındıktan **sonra** `terraform destroy` çalıştırılır.
 
-### Node boyutlandırma gerekçesi
+### Node boyutlandırma — kota kısıtı ve çözümü
 
-`t3.medium` (2 vCPU / 4 GB) × 3 seçildi. Karşılaştırma:
+Plan 3 × `t3.medium` (6 vCPU) öngörüyordu. Aşama 3'te hesabın `eu-central-1` vCPU
+kotasının **5** olduğu ölçüldü; node group hiç açılmayacaktı. Geçici olarak
+2 × `t3.medium`'a inildi ve cluster bu haliyle doğrulandı.
 
-| | 2 × `t3.large` | **3 × `t3.medium`** | 2 × `t3.medium` |
-|---|---|---|---|
-| Allocatable bellek | ~13.5 GB | **~10 GB** | ~6.6 GB |
-| Sistem + addon'lar | ~1.5 GB | ~2 GB | ~1.5 GB |
-| Uygulama (fe+be+mongo) | ~1 GB | ~1 GB | ~1 GB |
-| Monitoring'e kalan | ~11 GB | **~7 GB** | ~4 GB |
-| 3 günlük maliyet | ~12.4 $ | **~9.3 $** | ~6.2 $ |
-| Değerlendirme | Gereğinden büyük | **Seçilen** | Sınırda — Gün 3'te Prometheus `Pending` riski |
+**Kota 16'ya çıkarıldı → plandaki 3 node'a dönüldü.**
 
-- kube-prometheus-stack + Loki + Alloy gerçekte ~4–5 GB ister. 2 × `t3.medium`'da bu marj
-  yok; sorun tam da Gün 3 akşamı, en kötü anda çıkar.
-- 3 node, 2 node'dan **hem daha ucuz hem teslimde daha güçlü**: PDB, pod anti-affinity,
-  HPA 2→6 dağılımı ve node kaybı senaryosu gerçekten gösterilebilir hâle gelir.
-- **`t3.small` ve altı kullanılamaz:** allocatable ~1.4 GB'ı DaemonSet'ler tek başına yer;
-  ayrıca VPC CNI `max-pods` limiti `t3.small`'da **11**, `t3.medium`'da **17**'dir.
-- `credit_specification = "standard"` bırakılır (unlimited değil) — 3 günlük demo yükünde
-  burst kredisi yetiyor, beklenmedik fatura riski doğmuyor.
-- Bellek yine de sıkışırsa çözüm node büyütmek değil, **Aşama 6 tampon kuralıdır**:
-  Loki + Alloy kesilir, Prometheus + Alertmanager + `ETLJobMissing` kalır (~1.5 GB).
+2 node'lu cluster'da **ölçülen** değerler bu kararı veriye dayandırdı:
+
+| | 2 × t3.medium (ölçülen) | **3 × t3.medium (hedef)** |
+|---|---|---|
+| allocatable bellek | 3.37 GiB/node → **6.74 GiB** | ~10.1 GiB |
+| `max-pods` (VPC CNI) | 17/node → **34** | 51 |
+| kube-system tüketimi | 14 pod · ~1.2 GiB | ~17 pod · ~1.7 GiB |
+| **Boşta kalan** | **20 pod · ~5.5 GiB** | **~34 pod · ~8.4 GiB** |
+
+Tahmini yük: uygulama ~6 pod/1 GiB + kube-prometheus-stack ~7 pod/3 GiB +
+Loki/Alloy ~4 pod/1 GiB ≈ **17 pod / ~5 GiB**.
+
+2 node'da bu, 20 slotun 17'sini doldururdu ve HPA backend'i 2→6 ölçekleyince
+**pod limiti dolardı** — yani HPA demosu ile tam monitoring aynı anda çalışmazdı.
+3 node'da 34 slotun yarısı, belleğin %60'ı kullanılır; ikisi de rahat çalışır.
+
+`t3.large`'a çıkmaya gerek görülmedi: ölçümler `t3.medium` × 3'ün yettiğini
+gösteriyor ve günlük maliyeti 3.11 $ (t3.large × 2 → 4.15 $).
+`node_instance_type` yine de bir değişkendir.
+
+### Kubernetes sürümü — 1.34 (maliyet kararı)
+
+| Destek | Sürümler |
+|---|---|
+| **Standart** (0.10 $/saat) | **1.36, 1.35, 1.34** |
+| **Extended** (0.60 $/saat, **6×**) | 1.33, 1.32, 1.31 |
+
+1.33 planlanmıştı ama standart desteği **29 Temmuz 2026**'da bitmiş. Kritik ayrıntı:
+extended support yeni cluster'larda **varsayılan olarak açıktır** — fark edilmeseydi
+control plane 3 günde ~7 $ yerine ~43 $ tutar, bütçeyi tek başına patlatırdı.
+1.34 standart destekte (2 Aralık 2026'ya kadar) ve addon/chart ekosisteminde en olgun sürüm.
+
+### Araç sürümleri (CI ile aynı olmalı)
+
+`terraform 1.15.9` · `kubectl 1.34.11` (cluster ile aynı minor) · `helm 3.21.4`
+Üçü de checksum doğrulamasıyla kuruldu.
+
+
+> `credit_specification = "standard"` bırakılır (unlimited değil): 3 günlük demo
+> yükünde burst kredisi yetiyor, beklenmedik fatura riski doğmuyor.
+> `t3.small` ve altı kullanılamaz — VPC CNI `max-pods` limiti 11'dir.
 
 ---
 
@@ -175,9 +212,12 @@ Trivy'de 0 HIGH/CRITICAL (ilk taramada 95 düzeltilebilir bulgu vardı, hepsi ka
 
 ---
 
-## Aşama 3 — Altyapı (Terraform)
+## Aşama 3 — Altyapı (Terraform) ✅ **TAMAMLANDI**
 
-Modüller: `network`, `eks`, `ecr`, `iam`, `addons`, `edge`.
+Stack'ler: `terraform/bootstrap` (S3 state) · `terraform/envs/prod` (VPC, EKS, ECR, IAM,
+ALB Controller) · `terraform/envs/edge` (CloudFront — **Aşama 4'ten sonra** apply edilir).
+VPC/EKS/IRSA için `terraform-aws-modules` sürüm pinli kullanıldı; ECR, GitHub OIDC ve
+edge kendi ince modüllerimiz. Ayrıntı: `terraform/README.md`.
 
 | Modül | İçerik |
 |---|---|
@@ -203,15 +243,20 @@ Modüller: `network`, `eks`, `ecr`, `iam`, `addons`, `edge`.
 
 ---
 
-## Aşama 4 — Kubernetes Manifestleri
+## Aşama 4 — Kubernetes Manifestleri ✅ **TAMAMLANDI**
 
 ```
 k8s/
-  base/       namespace, backend, frontend, mongodb (StatefulSet+PVC),
-              etl-cronjob, services, ingress, configmap, secret,
-              hpa, pdb, networkpolicy
-  overlays/prod/
+  base/       configmap, mongodb (StatefulSet + headless Service),
+              backend (Deployment/Service/HPA/PDB),
+              frontend (Deployment/Service/PDB),
+              ingress, etl-cronjob, networkpolicy
+  overlays/prod/  kustomization (namespace, images) + ingress-patch
 ```
+
+> **Sapma:** `namespace` ve `secret` manifest olarak yazılmadı — ikisini de
+> `terraform/envs/prod` üretiyor (ADR 10). Böylece parola hiçbir dosyada düz metin
+> geçmiyor ve çift sahiplik çakışması olmuyor.
 
 - **Backend**: Deployment, replica 2, `resources.requests/limits`, liveness+readiness, HPA (CPU %70, 2→6).
 - **Frontend**: Deployment, replica 2, nginx, HPA yok (kapsam dışı).

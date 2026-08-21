@@ -1,0 +1,166 @@
+# Default-deny + yalnızca gerekli yollar (MIMARI.md §4).
+#
+# ÖN KOŞUL: VPC CNI addon'ında `enableNetworkPolicy = "true"` olmalı
+# (terraform/envs/prod/main.tf). Kapalıyken bu kaynaklar sorunsuz apply olur,
+# `kubectl get netpol` hepsini listeler ama HİÇBİR trafiği engellemez.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  podSelector: {} # namespace'teki tüm pod'lar
+  policyTypes: [Ingress, Egress]
+---
+# DNS herkese açık olmalı: kapalıyken Service adları çözülmez ve hata
+# "connection refused" değil, teşhisi zor bir timeout olarak görünür.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# ALB → frontend. ALB target-type: ip modunda pod'a node/ENI üzerinden
+# gelir; kaynak IP VPC içindedir, bu yüzden podSelector değil ipBlock.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-alb-to-frontend
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 10.0.0.0/16 # terraform var.vpc_cidr ile aynı olmalı
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-backend
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      ports:
+        - protocol: TCP
+          port: 5050
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: frontend
+      ports:
+        - protocol: TCP
+          port: 5050
+    # ALB'nin health check'i backend'e gitmiyor (hedef yalnızca frontend),
+    # ama kubelet probe'ları node'dan gelir ve NetworkPolicy kapsamı dışındadır.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-to-mongodb
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mongodb
+      ports:
+        - protocol: TCP
+          port: 27017
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mongodb-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mongodb
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      ports:
+        - protocol: TCP
+          port: 27017
+---
+# ETL yalnızca internete 443 açar (api.github.com). VPC CIDR'ı `except` ile
+# dışlamak, ETL container'ının cluster içi servislere yanlışlıkla ulaşmasını
+# engeller — 0.0.0.0/0 tek başına iç ağı da kapsar.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-etl-https-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: etl
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# Aşama 6 hazırlığı: Prometheus/Alloy monitoring namespace'inden scrape eder.
+# Şimdiden açılıyor ki monitoring kurulunca netpol hata ayıklaması gerekmesin.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring-scrape
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring

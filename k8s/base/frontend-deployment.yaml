@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: frontend
+    spec:
+      # nginx imajındaki `nginx` kullanıcısı uid/gid 101.
+      # fsGroup olmadan aşağıdaki emptyDir'ler root sahipli mount edilir ve
+      # entrypoint template'i render edemez.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: nginx
+          image: mern-client # tag overlay'de `images:` ile verilir
+          ports:
+            - name: http
+              containerPort: 8080 # 80 root gerektirir, non-root nginx 8080'de
+          env:
+            # Sadece bu değişken gerekir; NGINX_LOCAL_RESOLVERS'ı entrypoint
+            # /etc/resolv.conf'tan doldurur (NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1).
+            - name: BACKEND_UPSTREAM
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: BACKEND_UPSTREAM
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          # readOnlyRootFilesystem altında nginx'in yazması gereken DÖRT yol.
+          volumeMounts:
+            - name: cache
+              mountPath: /var/cache/nginx
+            - name: run
+              mountPath: /run # nginx.pid
+            - name: tmp
+              mountPath: /tmp
+            # EN KOLAY GÖZDEN KAÇAN: entrypoint envsubst template'i BURAYA
+            # render eder. Yazamazsa script sessizce çıkar, nginx varsayılan
+            # "Welcome to nginx" sayfasını servis eder ve /api proxy'si hiç
+            # kurulmaz — pod yine de Ready görünür.
+            - name: conf
+              mountPath: /etc/nginx/conf.d
+      volumes:
+        - name: cache
+          emptyDir: {}
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: conf
+          emptyDir: {}

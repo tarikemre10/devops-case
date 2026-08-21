@@ -1,0 +1,18 @@
+# Headless Service — StatefulSet'in pod'una kararlı DNS adı verir:
+#   mongodb-0.mongodb.mern.svc.cluster.local
+# ATLAS_URI (Terraform'da üretilir) tam olarak bu adı kullanır.
+# clusterIP: None → load balancing yok, doğrudan pod IP'si döner.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  labels:
+    app.kubernetes.io/name: mongodb
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: mongodb
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: mongodb

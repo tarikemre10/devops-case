@@ -3,8 +3,8 @@
 Bu doküman sistemin **hedef mimarisini** ve her bileşenin somut yapılandırmasını tanımlar.
 Aşamalar, kesim listesi ve çalışma kuralları için: [PROJE_PLANI.md](PROJE_PLANI.md)
 
-> **Durum:** Aşama 1 (kod hazırlığı) ve Aşama 2 (konteynerleştirme) **uygulandı ve doğrulandı**;
-> §3.1–3.4 artık çalışan gerçeği anlatıyor. Aşama 3 ve sonrası hedef tasarımdır.
+> **Durum:** Aşama 1–3 **uygulandı ve doğrulandı**; §1–3 artık çalışan gerçeği
+> anlatıyor. Aşama 4 ve sonrası hedef tasarımdır.
 > Doğrulama kanıtları: [docs/KARSILASILAN_ZORLUKLAR.md](docs/KARSILASILAN_ZORLUKLAR.md)
 
 ---
@@ -14,7 +14,7 @@ Aşamalar, kesim listesi ve çalışma kuralları için: [PROJE_PLANI.md](PROJE_
 | # | Karar | Seçilen | Gerekçe | Elenen alternatif |
 |---|---|---|---|---|
 | 1 | Bulut | AWS · `eu-central-1` | EKS/ECR/ALB/IRSA olgun, case serbest bırakmış | GCP, HWC |
-| 2 | Orkestrasyon | **EKS + managed node group** (**3 × `t3.medium`**) | Sektör standardı; Fargate DaemonSet ve EBS PVC desteklemediği için Grafana Alloy + MongoDB planını bozardı. Boyut: 2×`t3.large`'dan hem ucuz hem 3 node ile PDB/anti-affinity gösterilebilir; `t3.small` VPC CNI `max-pods=11` limiti nedeniyle kullanılamaz | EKS Fargate, EC2+k3s, 2×`t3.large`, 2×`t3.medium` |
+| 2 | Orkestrasyon | **EKS 1.34 + managed node group** (**3 × `t3.medium`**) | Fargate DaemonSet ve EBS PVC desteklemediği için Alloy + MongoDB planını bozardı. Node sayısı önce vCPU kotasıyla (5) 2'ye düşmüştü; kota 16'ya çıkınca ölçülen kapasiteye dayanarak 3'e döndü (2 node'da HPA + tam monitoring `max-pods` limitine takılıyordu). Sürüm bir maliyet kararı: 1.33 standart destekten çıkmış, extended support control plane'i 6× pahalı yapar ve varsayılan olarak açıktır | EKS Fargate, EC2+k3s, 2×`t3.large`, 3×`t3.medium` (kotayı aşıyor), EKS 1.33 (extended) |
 | 3 | Veritabanı | **Cluster içi MongoDB StatefulSet** | Case "veritabanını da Dockerize et" diyor; Atlas/DocumentDB bunu karşılamaz | MongoDB Atlas, DocumentDB |
 | 4 | Manifest & deploy | **Kustomize + kubectl (push-based)** | En az hareketli parça, deploy adımı pipeline'da görünür | Helm, Argo CD |
 | 5 | **TLS / giriş noktası** | **CloudFront → ALB** | **Kayıtlı domain yok.** CloudFront ücretsiz ve geçerli `*.cloudfront.net` sertifikası verir; case'in "public URL + HTTPS" beklentisi domain satın almadan karşılanır | Route53 + ACM (domain gerekir), ALB'de düz HTTP (TLS yok), self-signed (tarayıcı uyarısı) |
@@ -23,6 +23,8 @@ Aşamalar, kesim listesi ve çalışma kuralları için: [PROJE_PLANI.md](PROJE_
 | 8 | Registry | Amazon ECR | Cluster ile aynı hesap, scan-on-push | GHCR |
 | 9 | Frontend→API yolu | **Göreli `/api` + nginx reverse proxy** | CRA env'i build-time gömer; göreli yol ile aynı image tüm ortamlarda çalışır, CORS ortadan kalkar | `REACT_APP_API_URL` build-arg |
 | 10 | Secret yönetimi | **Terraform `random_password` → K8s Secret** | Git'te düz secret bulunmaması hedefini 3 gün içinde karşılar; ESO ayrı IRSA+CRD maliyeti getirirdi | External Secrets Operator + Secrets Manager (prod yolu) |
+| 11 | Terraform state | **S3 + native lockfile** (`use_lockfile`) | Terraform 1.10+ ile DynamoDB kilit tablosu gereksizleşti — bir kaynak, bir maliyet kalemi, bir hata yüzeyi eksik | S3 + DynamoDB |
+| 12 | TF modülleri | **`terraform-aws-modules/{vpc,eks,iam}`** sürüm pinli | OIDC provider, access entries, launch template, IRSA gibi kolay hata yapılan kısımları doğru kurar; 3 günde ham kaynak yazmak riskli | Ham `aws_eks_cluster` vb. |
 
 ---
 
@@ -257,12 +259,16 @@ mern namespace: varsayılan tüm ingress/egress kapalı, üstüne:
 │   ├── nginx.conf
 │   └── docker-compose.yml              # mongo + be + fe + cypress/included:4.12.1
 ├── k8s/
-│   ├── base/                           # namespace, deployment, sts, cronjob,
-│   │                                   # svc, ingress, hpa, pdb, netpol, secret, configmap
-│   └── overlays/prod/
+│   ├── base/                           # configmap, sts+svc (mongo), deployment+svc
+│   │                                   # +hpa+pdb (be/fe), ingress, cronjob, netpol
+│   │                                   # (namespace ve secret'lar Terraform'da — ADR 10)
+│   └── overlays/prod/                  # kustomization (ns, images) + ingress-patch
 ├── terraform/
-│   ├── modules/{network,eks,ecr,iam,addons,edge}/
-│   └── envs/prod/                      # backend.tf (S3+DynamoDB), tfvars
+│   ├── bootstrap/                      # S3 state bucket (ayrı state)
+│   ├── modules/{ecr,github-oidc,edge}/ # yalnızca upstream'de karşılığı olmayanlar;
+│   │                                   # vpc/eks/irsa için terraform-aws-modules (ADR 12)
+│   ├── envs/prod/                      # backend.tf (S3 native lock), VPC+EKS+ECR+IAM
+│   └── envs/edge/                      # CloudFront — Aşama 4'ten SONRA apply
 ├── monitoring/                         # values.yaml + PrometheusRule + dashboard json
 ├── .github/workflows/{mern.yml,etl.yml}
 ├── docs/
@@ -329,7 +335,7 @@ ALB `HTTPCode_Target_5XX_Count`.
 | Trafik artışı | Backend HPA 2→6. **Node sayısı sabit (3 × `t3.medium`)** — Cluster Autoscaler kapsam dışı, sınır README'de yazılı |
 | Pod ölümü | Deployment yeniden yaratır; readiness hazır olmadan trafik gitmez |
 | Node kaybı | 2 AZ + 3 node + PDB (`minAvailable: 1`) + pod anti-affinity ile en az 1 replica ayakta |
-| Bellek baskısı | Monitoring'e ~7 GB allocatable kalır; sıkışırsa Loki+Alloy kesilir (Aşama 6 tampon kuralı), node büyütülmez |
+| Bellek baskısı | Monitoring'e **~8.4 GiB** kalır (3 node, ölçülen 3.37 GiB/node üzerinden). Tahmini yük ~5 GiB → rahat. Tampon kuralı yine de geçerli |
 | Kötü deploy | `maxUnavailable: 0` rolling update; rollout fail → otomatik `rollout undo` |
 | DB verisi | EBS gp3 PVC kalıcı; StatefulSet yeniden planlanınca aynı volume bağlanır |
 | Statik içerik yükü | CloudFront edge cache (`/api/*` hariç) |

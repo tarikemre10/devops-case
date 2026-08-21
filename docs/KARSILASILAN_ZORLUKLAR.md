@@ -75,14 +75,14 @@ ve bu yüzden önceden planlanmış yapılandırma kararlarıdır.
 
 | # | Durum | Konu | Sorun | Çözüm |
 |---|---|---|---|---|
-| A | [ ] | **EBS CSI Driver** | EKS 1.23+ sürümünde `aws-ebs-csi-driver` addon'u ve IRSA rolü olmadan MongoDB'nin `volumeClaimTemplates` PVC'si kalıcı olarak `Pending`'de kalır; StatefulSet hiç açılmaz | Terraform `addons` modülünde **ilk sırada** kurulur; ayrıca `gp3` StorageClass elle tanımlanır (EKS varsayılanı `gp2`) |
+| A | [x] | **EBS CSI Driver** | EKS 1.23+ sürümünde `aws-ebs-csi-driver` addon'u ve IRSA rolü olmadan MongoDB'nin `volumeClaimTemplates` PVC'si kalıcı olarak `Pending`'de kalır; StatefulSet hiç açılmaz | Terraform `addons` modülünde **ilk sırada** kurulur; ayrıca `gp3` StorageClass elle tanımlanır (EKS varsayılanı `gp2`) |
 | B | [x] | **nginx upstream DNS** | `proxy_pass` sabit yazılırsa nginx başlangıçta DNS çözümler; backend Service henüz yokken pod CrashLoop'a girer | Değişkenli `proxy_pass` + resolver. **Resolver adresi sabit yazılmıyor:** imajın `15-local-resolvers.envsh` scripti `/etc/resolv.conf`'tan okuyup `$NGINX_LOCAL_RESOLVERS`'a yazıyor → aynı template compose'da (`127.0.0.11`) ve K8s'te (kube-dns) çalışıyor. Compose'da doğrulandı. |
 | C | [x] | **nginx + `readOnlyRootFilesystem`** | nginx `/var/cache/nginx`, `/run`, `/tmp` dizinlerine yazamadığı için açılmaz | Dockerfile'da bu yollar `chown nginx:nginx` yapıldı. **Dördüncü yol keşfedildi: `/etc/nginx/conf.d`** — envsubst template'i oraya render ediyor, yazamazsa script sessizce çıkıyor ve nginx varsayılan sayfayı servis ediyor. K8s'te dört `emptyDir` + `fsGroup: 101` gerekecek. |
-| D | [ ] | **CloudFront cache API'yi bozuyor** | Varsayılan behavior GET dışını reddeder / bayat yanıt döner; Host header origin'e taşınırsa ALB yönlendirmesi şaşar | `/api/*` için ayrı behavior: `CachingDisabled` + `AllViewerExceptHostHeader` + tüm HTTP metodları |
+| D | [x] | **CloudFront cache API'yi bozuyor** | Varsayılan behavior GET dışını reddeder / bayat yanıt döner; Host header origin'e taşınırsa ALB yönlendirmesi şaşar | `/api/*` için ayrı behavior: `CachingDisabled` + `AllViewerExceptHostHeader` + tüm HTTP metodları. **Doğrulandı:** CloudFront üzerinden `POST /api/record` → 201 ve hemen ardından `GET` yeni kaydı döndü (bayat yanıt yok) |
 | E | [x] | **Trivy pipeline'ı kilitliyor** | Düzeltmesi olmayan CVE'ler `main`'i kalıcı kırmızıya çevirir | `--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1`. Aşama 2'de lokal olarak çalıştırıldı; **düzeltilebilir 95 bulgu çıktı ve üçü de 0'a indirildi** (aşağıya bakınız). CI eşiği artık gerçekçi. |
 | F | [x] | **Cypress sürüm uyumu** | Repo `cypress ^4.2.0` + `cypress.json` + `integration/` düzenini kullanıyor; Cypress 10+ imajları bu testleri bulamaz. Ayrıca Cypress 4.x **host makinede hiç başlamıyor** (Ubuntu 24.04 kütüphane uyumsuzluğu) | `cypress/included:4.12.1` imajı pinlendi ve Aşama 1 doğrulamasında fiilen kullanıldı — 3/3 geçti |
-| G | [ ] | **Domain yok** | Kayıtlı domain olmadığı için Route53 + ACM ile TLS kurulamaz; ancak case public URL ve HTTPS bekliyor | ALB önüne CloudFront: ücretsiz ve geçerli `*.cloudfront.net` sertifikası, `redirect-to-https`. ALB Security Group yalnız `com.amazonaws.global.cloudfront.origin-facing` prefix list'ine açılır → ALB'ye doğrudan erişim kapalı |
-| H | [ ] | **Yeni AWS hesabı** | Hesap aktivasyonu saatler sürebilir; yeni hesaplarda EC2 vCPU kotası düşük gelebilir ve artırma talebi 24–48 saat alır | Hesap açma + kota kontrolü Gün 0'a alındı; Aşama 1–2 AWS gerektirmediği için beklerken yürütülür |
+| G | [x] | **Domain yok** | Kayıtlı domain olmadığı için Route53 + ACM ile TLS kurulamaz; ancak case public URL ve HTTPS bekliyor | ALB önüne CloudFront: ücretsiz ve geçerli `*.cloudfront.net` sertifikası, `redirect-to-https` (HTTP → **301** doğrulandı). **Sapma:** ALB'ye doğrudan erişim, planlanan Security Group prefix list'i yerine **paylaşılan `X-Origin-Verify` header'ı** ile kapatıldı — ALB listener kuralı header'sız isteğe fixed-response 403 döner. Sebep: prefix list SG kuralını ALB Controller'ın yönettiği SG'ye Terraform'dan eklemek, controller'ın kuralı geri almasıyla çakışıyor; header yöntemi Ingress annotation'ı olduğu için aynı sahibin elinde kalıyor. **Doğrulandı:** header'sız `curl` → 403 "Direct access denied", header'lı → 200 |
+| H | [x] | **Yeni AWS hesabı** | Hesap aktivasyonu saatler sürebilir; yeni hesaplarda EC2 vCPU kotası düşük gelebilir ve artırma talebi 24–48 saat alır | Hesap açma + kota kontrolü Gün 0'a alındı. **Risk gerçekleşti:** kota 5 vCPU çıktı ve planlanan 3×t3.medium (6 vCPU) hiç açılmayacaktı — Aşama 3'te yakalandı, topoloji 2×t3.medium'a çekildi (madde 18) |
 
 ---
 
@@ -140,3 +140,101 @@ Bilinçli tercih. ETL sürekli çalışan bir servis değil, tek seferlik bir ba
 sürekli yoklanacak bir process yok. Sağlığı çıkış koduyla ölçülür — `runner.py`
 hata durumunda `exit 1` döner, Kubernetes Job'ı `Failed` işaretler ve
 `ETLJobMissing` alert'i tetiklenir.
+
+
+---
+
+## Aşama 3 — Altyapı (Terraform)
+
+Stack'ler: `terraform/bootstrap` (S3 state), `terraform/envs/prod` (VPC, EKS, ECR, IAM),
+`terraform/envs/edge` (CloudFront — Aşama 4'ten sonra apply edilir).
+
+| # | Durum | Konu | Sorun | Çözüm |
+|---|---|---|---|---|
+| 18 | [x] | **vCPU kotası planı bozdu** | Hesabın `eu-central-1` kotası **5 vCPU**. Planlanan 3 × `t3.medium` = 6 vCPU → node group hiç açılmayacaktı. 8 vCPU talebi `CASE_OPENED` durumunda ve onay 24–48 saat sürebilir | Topoloji geçici olarak **2 × `t3.medium`** (4 vCPU) yapıldı ve cluster bu haliyle doğrulandı. **Kota 16'ya çıkarıldıktan sonra plandaki 3 node'a dönüldü** — karar tahmine değil, 2 node'lu cluster'da ölçülen değerlere dayandı: 20 boş pod slotu ve ~5.5 GiB bellek, HPA (2→6) ile tam monitoring'i aynı anda kaldıramazdı. 3 node'da ~34 slot / ~8.4 GiB olur. `node_instance_type` ve `node_desired_size` Terraform değişkeni |
+| 19 | [x] | **EKS 1.33 extended support tuzağı** | Plan 1.33 öngörüyordu ("olgun sürüm"). Ama 1.33'ün standart desteği **29 Temmuz 2026**'da bitmiş; sürüm artık extended support'ta ve control plane **0.10 $/saat yerine 0.60 $/saat** (6×). Üstelik extended support yeni cluster'larda **varsayılan olarak açık** — fark edilmeseydi fatura sessizce ~7 $ yerine ~43 $ olurdu | **1.34** seçildi (standart destek 2 Aralık 2026'ya kadar). `variables.tf` içine doğrulama komutu yorum olarak eklendi; apply öncesi `describe-cluster-versions` ile `STANDARD_SUPPORT` teyit ediliyor |
+| 20 | [x] | **Provider/modül sürüm çakışması** | `provider aws ~> 6.0` yazılmıştı ama `terraform-aws-modules/eks` v20 `< 6.0.0` istiyor → `terraform init` çöktü | Ana stack `~> 5.100`'e sabitlendi (EKS modülü v21 major rewrite, 3 günde riskli). `bootstrap` bilinçli olarak 6.x'te bırakıldı — ayrı state, yalnızca S3 kaynakları; 5.x'e düşürülünce mevcut state okunamadı ("created by a newer provider version") |
+| 21 | [x] | **Node disk boyutu sessizce yok sayılıyor** | Node group'a `disk_size = 30` verilmişti ama planda `disk_size: None` göründü. Modül özel launch template kullandığında bu alan **yok sayılır**; node'lar varsayılan 20 GiB ile açılırdı. kube-prometheus-stack + Loki + uygulama imajları çekilince DiskPressure ve pod tahliyesi kaçınılmazdı | `block_device_mappings` ile 30 GiB gp3 (şifreli) tanımlandı. Planda doğrulandı |
+| 22 | [x] | **Terraform state kilidi** | Klasik yaklaşım S3 + DynamoDB tablosu | Terraform 1.10+ ile gelen **S3 native lockfile** (`use_lockfile = true`) kullanıldı — DynamoDB tablosu hiç yaratılmadı |
+| 24 | [x] | **metrics-server sessizce çalışmıyordu** | `terraform apply` temiz geçti, `kubectl -n kube-system get deploy metrics-server` **2/2 READY** gösterdi — ama `kubectl top nodes` "Metrics API not available" dedi. APIService `v1beta1.metrics.k8s.io` durumu `False (FailedDiscoveryCheck)`: control plane pod'a ulaşamıyordu. Sebep: EKS metrics-server addon'ı **10251** portunda dinliyor, modülün varsayılan node güvenlik grubu kuralları ise control plane'den yalnızca 443 ve 10250'ye (kubelet) izin veriyor | `node_security_group_additional_rules` ile 10251'e `source_cluster_security_group` ingress kuralı eklendi. **Neden önemli:** pod'lar sağlıklı göründüğü için sorun fark edilmez; HPA metrik bulamaz ve hiç ölçeklenmez — Aşama 4'teki HPA demosu sessizce çalışmazdı |
+| 25 | [x] | **IAM açıklamasında Unicode uzun tire** | `apply` 90 kaynağın 87'sini yarattıktan sonra IAM rolünde patladı: `ValidationError: Value at 'description' failed to satisfy constraint: [\u0009\u000A\u000D\u0020-\u007E\u00A1-\u00FF]`. Açıklamadaki uzun tire (`—`, U+2014) bu aralığın dışında. Türkçe karakterler (`ü` = U+00FC) sorun değil, tire | Açıklamalar ASCII'ye çevrildi. Aynı tuzak CloudFront `comment` alanında da vardı, önden düzeltildi |
+| 23 | [x] | **CloudFront sıra tuzağı** | ALB'yi Terraform yaratmıyor; Aşama 4'te Ingress'ten AWS Load Balancer Controller yaratıyor. CloudFront ana stack'te olsaydı origin'i bulunamayacaktı | `envs/edge` **ayrı stack** olarak yazıldı ve ALB'yi `elbv2.k8s.aws/cluster` tag'i üzerinden `data "aws_lb"` ile buluyor. **Aşama 4'ten sonra** apply edildi ve ALB'yi ilk denemede buldu — plan hata vermedi |
+
+### Araç sürümleri
+
+`terraform 1.15.9` · `kubectl 1.34.11` · `helm 3.21.4` — üçü de checksum doğrulamasıyla kuruldu.
+kubectl bilinçli olarak cluster ile aynı minor sürümde: en yeni sürüm 1.36'ydı ama
+kubectl ±1 minor skew destekler, 1.36 ↔ 1.34 iki minor uzaklıkta kalırdı.
+
+### Aşama 3 doğrulama kanıtları
+
+| Test | Sonuç |
+|---|---|
+| `terraform apply` | 91 kaynak, temiz |
+| `kubectl get nodes` | 2 node **Ready**, `v1.34.9-eks`, private IP (10.0.x) |
+| Sürüm destek durumu | `1.34 STANDARD_SUPPORT` — son tarih 2026-12-02 (extended support ücreti yok) |
+| kube-system pod'ları | 14/14 Running (vpc-cni, coredns, kube-proxy, ebs-csi ×4, metrics-server ×2, alb-controller ×2) |
+| StorageClass | `gp3 (default)`, `WaitForFirstConsumer`, expansion açık · gp2'nin default işareti kaldırıldı |
+| **EBS CSI + IRSA** | Test PVC **8 saniyede Bound**; pod volume'a yazdı; AWS tarafında `gp3`, **şifreli**, `in-use` volume doğrulandı |
+| `kubectl top nodes` | Çalışıyor (SG kuralı sonrası); APIService `True` |
+| Node diski | 30 GiB (launch template'ten) |
+| ECR | 3 repo, `IMMUTABLE`, scan-on-push açık |
+| GitHub OIDC | Trust policy `repo:tarikemre10/devops-case:*` ile sınırlı, `aud=sts.amazonaws.com` |
+| ALB Controller | 2/2 Available |
+
+### Ölçülen kapasite — Aşama 4 ve 6 için kritik
+
+| | Değer |
+|---|---|
+| Toplam pod kapasitesi | **34** (2 node × 17, VPC CNI `max-pods` limiti) |
+| kube-system'in kullandığı | 14 |
+| **Boştaki pod slotu** | **20** |
+| Toplam allocatable bellek | ~6.7 GiB |
+| Şu an kullanılan | ~1.2 GiB |
+| **Boştaki bellek** | **~5.5 GiB** |
+
+Tahmini tüketim: uygulama ~6 pod / ~1 GiB · kube-prometheus-stack ~7 pod / ~2.5–3 GiB ·
+Loki + Alloy ~3 pod / ~1 GiB → **16 pod / ~5 GiB**. Sığıyor ama marj yok;
+HPA backend'i 2→6 ölçeklerse 4 pod daha eklenir ve **20 slotun tamamı dolar**.
+
+---
+
+## Aşama 4 — Kubernetes Manifestleri
+
+Manifestler: `k8s/base` (13 kaynak) + `k8s/overlays/prod`. Namespace ve Secret'lar
+manifestlerde değil, `terraform/envs/prod`'da (ADR 10).
+
+| # | Durum | Konu | Sorun | Çözüm |
+|---|---|---|---|---|
+| 26 | [x] | **NetworkPolicy sessizce etkisiz** | EKS'in VPC CNI'ı NetworkPolicy nesnelerini **varsayılan olarak uygulamaz**. `kubectl apply` başarılı olur, `kubectl get netpol` hepsini listeler, ama tek bir paket bile engellenmez. Default-deny yazıp güvende sanmak en tehlikeli hâli | `vpc-cni` addon'ına `configuration_values = jsonencode({ enableNetworkPolicy = "true" })` eklendi. Doğrulama tahmine bırakılmadı: frontend pod'undan mongodb:27017'ye erişim timeout ile reddediliyor mu diye test edildi |
+| 27 | [x] | **Origin-verify yumurta-tavuk** | `X-Origin-Verify` değerini `envs/edge` üretiyordu, ama aynı değere **Aşama 4'teki Ingress annotation'ı** da ihtiyaç duyuyor — ve Ingress, edge'den ÖNCE apply ediliyor. Değer edge'de kalsaydı ALB kuralı henüz var olmayan bir sırra bağlanacaktı | `random_password.origin_verify` `envs/prod`'a taşındı ve `sensitive` output olarak verildi; edge onu `terraform_remote_state` ile okuyor. Overlay'de `__ORIGIN_VERIFY__` yer tutucusu var, apply öncesi `terraform output -raw origin_verify_secret` ile dolduruluyor (Aşama 5'te CI adımı olacak) — **git'e düz metin secret girmiyor** |
+| 28 | [x] | **ALB kural sırası** | Ingress'te iki kural var: koşullu `frontend` ve yakalayıcı `deny-direct` (403). ALB listener kuralları manifestteki **sırayla** üretilir; deny önce gelseydi CloudFront dahil her istek 403 alırdı | Koşullu kural listede ilk sırada; `overlays/prod/ingress-patch.yaml` içine sıranın neden önemli olduğu yorum olarak yazıldı. Patch `rules` listesini tamamen değiştiriyor (liste merge key'i yok), bu yüzden base'deki tek kural ezildi — `kubectl kustomize` çıktısıyla doğrulandı |
+| 29 | [x] | **StatefulSet'te readOnlyRootFilesystem** | mongod açılışta `/data/configdb` ve `/tmp`'ye yazmak istiyor; salt-okunur kökle "Permission denied" ile çıkıyor. Ayrıca PVC `fsGroup` olmadan root sahipli mount ediliyor ve veri dizini de yazılamıyor | İki `emptyDir` + `fsGroup: 999` (mongo imajının uid'si). Aynı kalıp frontend'de dört `emptyDir` + `fsGroup: 101` olarak zaten Aşama 2'de öğrenilmişti (madde C) |
+| 30 | [x] | **Liveness probe'a Mongo koymamak** | Backend'in `/healthcheck/ready` ucu Mongo ping içeriyor. Bunu liveness'a bağlamak cazip ama yanlış: Mongo kısa süre düşerse **tüm backend pod'ları** aynı anda restart döngüsüne girer ve Mongo geri gelse bile CrashLoopBackOff'tan çıkamazlar | Liveness `/healthcheck` (sadece process), readiness `/healthcheck/ready` (Mongo ping → 503, pod Service'ten düşer ama öldürülmez). İlk açılış için ayrıca `startupProbe` (30 × 5 sn) — `conn.mjs`'in üstel backoff'una zaman tanır |
+
+| 31 | [x] | **`sed` secret'ı repoya yazdı** | `__ORIGIN_VERIFY__` yer tutucusunu doldururken `sed` dosyadaki **yorum satırındaki** geçişi de değiştirdi; gizli değer apply'dan sonra iki yerde düz metin olarak dosyada kaldı | Apply biter bitmez ters `sed` ile yer tutucu geri konuldu ve dosyada değerin kalmadığı `grep` ile doğrulandı. **Aşama 5'te kalıcı çözüm:** dosyayı hiç değiştirmeyen bir akış — `kustomize build \| envsubst` ya da değeri yalnızca `kubectl patch` ile geçirmek. Repoda tutulan sürüm daima yer tutuculu olmalı |
+
+### Aşama 4 doğrulama kanıtları
+
+Statik: `kubectl kustomize k8s/overlays/prod` → 21 kaynak temiz render; dört pod şablonunun
+dördünde de `readOnlyRootFilesystem: true` + `runAsNonRoot: true`. `terraform validate`
+iki stack'te de başarılı, `terraform fmt -recursive -check` temiz.
+
+Cluster üzerinde (`mern-devops-case-prod`, 3 node):
+
+| Test | Sonuç |
+|---|---|
+| `terraform apply` (prod) | 5 eklendi, 1 değişti (vpc-cni netpol bayrağı), 0 silindi |
+| Namespace + Secret'lar | `mern` Active; `mongo-credentials` (3 anahtar) ve `origin-verify` Terraform'dan geldi |
+| ECR push | üç imaj da tag `2d9e9c04f433` (commit SHA) ile yüklendi |
+| PVC | `data-mongodb-0` **Bound**, 10Gi, `gp3` |
+| Rollout | mongodb 1/1, backend 2/2, frontend 2/2 — hepsi ilk denemede Running |
+| **Kriter 1 — Mongo bağlı** | `/healthcheck/ready` → `{"status":"ready","mongo":"up"}` |
+| **Kriter 2 — endpoint'ler** | ALB üzerinden POST **201**, GET 200, PATCH 200, DELETE 200 |
+| **Kriter 3 — sayfalar** | `/` ve `/create` 200 (SPA fallback + `/api` rewrite çalışıyor) |
+| **Kriter 4 — ETL saatte bir** | CronJob `0 * * * *`; elle tetiklenen Job **Complete**, JSON log, `etl.success` `duration_ms: 3342` |
+| Origin doğrulaması | header'sız → **403** "Direct access denied" · header'lı → **200** |
+| NetworkPolicy | frontend → mongodb:27017 **timeout** (engellendi) · frontend → backend:5050 **200** (izinli) · ETL → api.github.com **200** |
+| HPA | `cpu: 1%/70%`, 2/6 replica — metrics-server metriği geliyor |
+| PDB | backend ve frontend: `ALLOWED DISRUPTIONS 1` |
+| CloudFront (edge) | `https://d3istqpjzc491u.cloudfront.net` — `/` 200, `/api/record` 200, POST 201, HTTP → **301** HTTPS |

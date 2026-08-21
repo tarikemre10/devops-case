@@ -1,0 +1,16 @@
+# ALB target-type: ip olduğu için Service tipi ClusterIP kalır;
+# ALB pod IP'lerine doğrudan gider, NodePort'a gerek yoktur.
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    app.kubernetes.io/name: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: frontend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
