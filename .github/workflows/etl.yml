@@ -1,0 +1,206 @@
+# ETL pipeline — lint, build, tara, ECR'ye push, CronJob imajını güncelle.
+#
+# `mern-etl` tag'inin TEK SAHİBİ bu workflow'dur; mern.yml bu kaynağa dokunmaz.
+
+name: etl
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "python-project/**"
+      - "docker/Dockerfile.etl"
+      - ".github/workflows/etl.yml"
+  pull_request:
+    paths:
+      - "python-project/**"
+      - "docker/Dockerfile.etl"
+      - ".github/workflows/etl.yml"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: etl-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-central-1
+  IMAGE: mern-etl
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: ruff kurulumu
+        run: pip install "ruff==0.14.2"
+
+      # ETL.py case gereği DEĞİŞTİRİLMEZ; ona özgü kural dışlamaları
+      # python-project/ruff.toml içinde per-file-ignores ile tanımlı.
+      - name: ruff check
+        run: ruff check python-project
+
+      - name: ruff format
+        run: ruff format --check python-project
+
+      # Sözdizimi doğrulaması: ruff'ın yakalamadığı derleme hataları için.
+      - name: py_compile
+        run: python -m compileall -q python-project
+
+  build:
+    name: Build & push
+    needs: lint
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
+
+      # ECR IMMUTABLE: aynı commit için yeniden çalıştırma push'ta patlamasın.
+      - name: Tag zaten var mı?
+        id: exists
+        run: |
+          if aws ecr describe-images \
+                --repository-name "mern-devops-case/${{ env.IMAGE }}" \
+                --image-ids imageTag="${{ github.sha }}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ env.IMAGE }}:${{ github.sha }} ECR'de zaten var, build atlanıyor."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        if: steps.exists.outputs.skip == 'false'
+
+      - name: Build (local)
+        if: steps.exists.outputs.skip == 'false'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: python-project
+          file: docker/Dockerfile.etl
+          load: true
+          tags: ${{ vars.ECR_REGISTRY }}/mern-devops-case/${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha,scope=etl
+          cache-to: type=gha,mode=max,scope=etl
+
+      - name: Trivy taraması
+        if: steps.exists.outputs.skip == 'false'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ vars.ECR_REGISTRY }}/mern-devops-case/${{ env.IMAGE }}:${{ github.sha }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: ECR'ye push
+        if: steps.exists.outputs.skip == 'false'
+        run: docker push "${{ vars.ECR_REGISTRY }}/mern-devops-case/${{ env.IMAGE }}:${{ github.sha }}"
+
+  deploy:
+    name: CronJob imajını güncelle
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+        with:
+          version: v1.34.11
+
+      - name: kubeconfig
+        run: aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
+
+      # Geri alma için mevcut imaj saklanır: CronJob'ın Deployment gibi bir
+      # revizyon geçmişi yoktur, `rollout undo` çalışmaz.
+      - name: Mevcut imajı kaydet
+        id: current
+        run: |
+          set -euo pipefail
+          img=$(kubectl -n mern get cronjob etl \
+            -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[0].image}')
+          echo "image=$img" >> "$GITHUB_OUTPUT"
+          echo "Önceki imaj: $img"
+
+      - name: İmajı güncelle
+        run: |
+          set -euo pipefail
+          kubectl -n mern patch cronjob etl --type=json -p "$(cat <<EOF
+          [{"op":"replace",
+            "path":"/spec/jobTemplate/spec/template/spec/containers/0/image",
+            "value":"${{ vars.ECR_REGISTRY }}/mern-devops-case/${{ env.IMAGE }}:${{ github.sha }}"}]
+          EOF
+          )"
+
+      # Saat başını beklemeden yeni imajın gerçekten çalıştığı doğrulanır.
+      - name: Doğrulama job'ı
+        id: verify
+        run: |
+          set -euo pipefail
+          JOB="etl-ci-$(echo '${{ github.sha }}' | cut -c1-12)"
+          echo "job=$JOB" >> "$GITHUB_OUTPUT"
+          kubectl -n mern create job "$JOB" --from=cronjob/etl
+          kubectl -n mern wait --for=condition=complete --timeout=5m "job/$JOB"
+          kubectl -n mern logs "job/$JOB" --tail=50
+
+      - name: Hata çıktısı
+        if: failure()
+        run: |
+          kubectl -n mern describe job "${{ steps.verify.outputs.job }}" || true
+          kubectl -n mern logs "job/${{ steps.verify.outputs.job }}" --tail=100 || true
+
+      # Doğrulama job'ı, CronJob'ın kendi history limitlerine karışmasın diye
+      # başarılı da olsa başarısız da olsa silinir.
+      - name: Doğrulama job'ını sil
+        if: always()
+        run: kubectl -n mern delete job "${{ steps.verify.outputs.job }}" --ignore-not-found
+
+      # Yeni imaj çalışmıyorsa CronJob eski imaja döndürülür; aksi hâlde her
+      # saat başı bozuk bir Job tetiklenmeye devam ederdi.
+      - name: Geri al
+        if: failure() && steps.current.outputs.image != ''
+        run: |
+          set -euo pipefail
+          kubectl -n mern patch cronjob etl --type=json -p "$(cat <<EOF
+          [{"op":"replace",
+            "path":"/spec/jobTemplate/spec/template/spec/containers/0/image",
+            "value":"${{ steps.current.outputs.image }}"}]
+          EOF
+          )"
+          echo "CronJob ${{ steps.current.outputs.image }} imajına geri alındı."
+
+      - name: Özet
+        if: always()
+        run: |
+          {
+            echo "### ETL CronJob"
+            echo ""
+            kubectl -n mern get cronjob etl \
+              -o custom-columns='NAME:.metadata.name,SCHEDULE:.spec.schedule,IMAGE:.spec.jobTemplate.spec.template.spec.containers[0].image' \
+              --no-headers | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"

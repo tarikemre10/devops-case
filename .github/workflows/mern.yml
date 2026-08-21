@@ -1,0 +1,307 @@
+# MERN pipeline — build, test, tara, ECR'ye push, EKS'e dağıt.
+#
+# Kapsam: yalnızca backend (mern-server) ve frontend (mern-client) imajları.
+# ETL imajının (mern-etl) tek sahibi `etl.yml`'dir — bkz. deploy job'ındaki not.
+#
+# Uzun ömürlü AWS anahtarı YOKTUR: erişim GitHub OIDC ile üstlenilen
+# `mern-devops-case-github-actions` rolünden gelir (terraform/modules/github-oidc).
+
+name: mern
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "mern-project/**"
+      - "docker/Dockerfile.server"
+      - "docker/Dockerfile.client"
+      - "docker/nginx/**"
+      - "docker-compose.yml"
+      - ".github/workflows/mern.yml"
+  pull_request:
+    paths:
+      - "mern-project/**"
+      - "docker/Dockerfile.server"
+      - "docker/Dockerfile.client"
+      - "docker/nginx/**"
+      - "docker-compose.yml"
+      - ".github/workflows/mern.yml"
+  # Deploy'u imaj değiştirmeden tekrarlayabilmek için.
+  workflow_dispatch:
+
+# Varsayılan olarak hiçbir izin yok; job'lar ihtiyacı kadarını açar.
+permissions: {}
+
+# İki deploy aynı anda cluster'a yazmasın. cancel-in-progress KAPALI:
+# yarıda kesilen bir rollout cluster'ı belirsiz durumda bırakır.
+concurrency:
+  group: mern-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-central-1
+
+jobs:
+  # ---------------------------------------------------------------------
+  # 1. Test — PR'da da push'ta da çalışır. Deploy buna bağlıdır.
+  # ---------------------------------------------------------------------
+  test:
+    name: Lint & e2e
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            mern-project/client/package-lock.json
+
+      - name: Client bağımlılıkları
+        working-directory: mern-project/client
+        run: npm ci
+
+      # CRA'nın kendi eslint yapılandırması build sırasında çalışır; CI=true
+      # ile uyarılar hataya dönüşür, yani bu adım aynı zamanda lint'tir.
+      - name: Client build (lint dahil)
+        working-directory: mern-project/client
+        env:
+          CI: "true"
+        run: npm run build
+
+      # Repoda henüz birim test yok; --passWithNoTests olmadan bu adım
+      # "no tests found" ile pipeline'ı kırardı.
+      - name: Client birim testleri
+        working-directory: mern-project/client
+        env:
+          CI: "true"
+        run: npm test -- --watchAll=false --passWithNoTests
+
+      - name: Server bağımlılıkları (denetim)
+        working-directory: mern-project/server
+        run: npm ci
+
+      # Uçtan uca test ÜRETİM ARTEFAKTINA karşı koşar: CRA dev server değil,
+      # nginx imajı. docker-compose.yml'deki `test` profili bunu kurar.
+      - name: Yığını ayağa kaldır
+        run: docker compose up --build -d
+
+      - name: Cypress e2e
+        run: docker compose --profile test run --rm cypress
+
+      - name: Hata çıktılarını yükle
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cypress-artifacts
+          path: |
+            mern-project/client/cypress/videos
+            mern-project/client/cypress/screenshots
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Konteyner logları (hata durumunda)
+        if: failure()
+        run: docker compose logs --no-color --tail=200
+
+      - name: Temizlik
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  # ---------------------------------------------------------------------
+  # 2. Build & scan & push — yalnızca master'a push'ta.
+  # ---------------------------------------------------------------------
+  build:
+    name: Build & push (${{ matrix.image }})
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # OIDC token'ı bu olmadan üretilmez
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: mern-server
+            dockerfile: docker/Dockerfile.server
+            context: mern-project/server
+          - image: mern-client
+            dockerfile: docker/Dockerfile.client
+            context: mern-project/client
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
+
+      # ECR repoları IMMUTABLE. Aynı commit için workflow yeniden çalıştırılırsa
+      # push `ImageTagAlreadyExistsException` ile pipeline'ı kırardı; imaj zaten
+      # oradaysa build+push atlanır (deploy yine de çalışır).
+      - name: Tag zaten var mı?
+        id: exists
+        run: |
+          if aws ecr describe-images \
+                --repository-name "mern-devops-case/${{ matrix.image }}" \
+                --image-ids imageTag="${{ github.sha }}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.image }}:${{ github.sha }} ECR'de zaten var, build atlanıyor."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        if: steps.exists.outputs.skip == 'false'
+
+      # Önce yalnızca yerel daemon'a yüklenir (--load). Push, Trivy taraması
+      # geçtikten SONRA yapılır — taranmamış imaj registry'ye hiç girmez.
+      - name: Build (local)
+        if: steps.exists.outputs.skip == 'false'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          # Dockerfile.client nginx yapılandırmasını ayrı bir context'ten alır
+          # (docker-compose.yml'deki additional_contexts ile aynı).
+          build-contexts: |
+            nginxconf=docker/nginx
+          load: true
+          tags: ${{ vars.ECR_REGISTRY }}/mern-devops-case/${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      # Eşik Aşama 2'de kalibre edildi: --ignore-unfixed olmadan düzeltmesi
+      # olmayan CVE'ler master'ı kalıcı kırmızıya çevirir.
+      - name: Trivy taraması
+        if: steps.exists.outputs.skip == 'false'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ vars.ECR_REGISTRY }}/mern-devops-case/${{ matrix.image }}:${{ github.sha }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: ECR'ye push
+        if: steps.exists.outputs.skip == 'false'
+        run: docker push "${{ vars.ECR_REGISTRY }}/mern-devops-case/${{ matrix.image }}:${{ github.sha }}"
+
+  # ---------------------------------------------------------------------
+  # 3. Deploy + smoke + rollback — hepsi TEK job.
+  #
+  # Smoke testi ayrı bir job'a bölünmez: GitHub job'ları izole makinelerde
+  # çalışır, ayrı job'ın ne OIDC oturumu ne de kubeconfig'i olur — yani
+  # başarısızlıkta `kubectl rollout undo` çalıştıramaz.
+  # ---------------------------------------------------------------------
+  deploy:
+    name: Deploy to EKS
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Runner'da kubectl hazır gelse bile sürümü garanti değil; cluster ile
+      # aynı minor sabitlenir (PROJE_PLANI "Araç sürümleri" kuralı).
+      - uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+        with:
+          version: v1.34.11
+
+      - name: kubeconfig
+        run: aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
+
+      # DİKKAT: burada ETL'e DOKUNULMAZ. Bu pipeline mern-etl:$SHA imajını
+      # üretmiyor; CronJob'ı bu tag'e çevirmek onu var olmayan bir imaja
+      # işaret ettirir ve ImagePullBackOff'a sokar. ETL'in tag sahibi etl.yml'dir.
+      #
+      # Container adları k8s/base/*-deployment.yaml ile birebir:
+      #   backend Deployment  → container "backend"
+      #   frontend Deployment → container "nginx"
+      - name: İmajları güncelle
+        run: |
+          set -euo pipefail
+          REG="${{ vars.ECR_REGISTRY }}/mern-devops-case"
+          kubectl -n mern set image deploy/backend  "backend=$REG/mern-server:${{ github.sha }}"
+          kubectl -n mern set image deploy/frontend "nginx=$REG/mern-client:${{ github.sha }}"
+
+      - name: Rollout
+        run: |
+          set -euo pipefail
+          kubectl -n mern rollout status deploy/backend  --timeout=5m
+          kubectl -n mern rollout status deploy/frontend --timeout=5m
+
+      # Smoke yalnızca HTTP durum koduna bakmaz. nginx sadece /api/ yolunu
+      # backend'e proxy'liyor; /healthcheck/ready gibi öneksiz bir yol SPA
+      # fallback'ine düşer ve 200 + HTML döner — yani sahte-yeşil verir.
+      # Bu yüzden Content-Type ve JSON alan değeri doğrulanır.
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          BASE="${{ vars.PUBLIC_URL }}"
+
+          # CloudFront cache'i ısınana kadar birkaç deneme.
+          for attempt in 1 2 3; do
+            ok=true
+
+            ctype=$(curl -sS -o /dev/null -w '%{http_code} %{content_type}' "$BASE/")
+            case "$ctype" in
+              "200 text/html"*) ;;
+              *) echo "frontend: beklenmeyen '$ctype'"; ok=false ;;
+            esac
+
+            ctype=$(curl -sS -o /dev/null -w '%{http_code} %{content_type}' "$BASE/api/record")
+            case "$ctype" in
+              "200 application/json"*) ;;
+              *) echo "/api/record: beklenmeyen '$ctype'"; ok=false ;;
+            esac
+
+            body=$(curl -sS "$BASE/api/healthcheck/ready")
+            if ! echo "$body" | jq -e '.mongo == "up"' >/dev/null 2>&1; then
+              echo "/api/healthcheck/ready: $body"
+              ok=false
+            fi
+
+            if [ "$ok" = true ]; then
+              echo "Smoke geçti (deneme $attempt)."
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "Smoke testi başarısız."
+          exit 1
+
+      # Rollout timeout'u ya da smoke başarısızlığı → önceki revizyona dön.
+      - name: Geri al
+        if: failure()
+        run: |
+          set -euo pipefail
+          kubectl -n mern rollout undo deploy/backend  || true
+          kubectl -n mern rollout undo deploy/frontend || true
+          kubectl -n mern rollout status deploy/backend  --timeout=5m
+          kubectl -n mern rollout status deploy/frontend --timeout=5m
+          kubectl -n mern get pods -o wide
+
+      - name: Özet
+        if: always()
+        run: |
+          {
+            echo "### Dağıtılan imajlar"
+            echo ""
+            kubectl -n mern get deploy backend frontend \
+              -o custom-columns='DEPLOY:.metadata.name,IMAGE:.spec.template.spec.containers[0].image' \
+              --no-headers | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
