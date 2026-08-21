@@ -121,6 +121,19 @@ variable "github_repository" {
   default     = "tarikemre10/devops-case"
 }
 
+variable "github_repository_immutable" {
+  description = <<-EOT
+    Aynı reponun GitHub OIDC immutable-ID biçimi: OWNER@<id>/REPO@<id>.
+
+    GitHub `sub` claim'ini bu biçimde üretiyor; yalnızca klasik OWNER/REPO
+    kalıbı yazılırsa AssumeRoleWithWebIdentity AccessDenied ile reddedilir
+    (KARSILASILAN_ZORLUKLAR madde 40). Repo değişirse CloudTrail'deki
+    userIdentity.userName alanından yeni değer okunur.
+  EOT
+  type        = string
+  default     = "tarikemre10@102986030/devops-case@1341157652"
+}
+
 # --- Uygulama ---------------------------------------------------------------
 
 variable "ecr_repositories" {

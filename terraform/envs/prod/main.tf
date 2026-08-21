@@ -425,6 +425,9 @@ module "github_oidc" {
   project           = var.project
   github_repository = var.github_repository
 
+  # GitHub'ın immutable-ID biçimi (bkz. KARSILASILAN_ZORLUKLAR madde 40).
+  github_repository_immutable = var.github_repository_immutable
+
   ecr_repository_arns = module.ecr.repository_arns
 
   # module.eks.cluster_arn DEĞİL: bkz. locals.eks_cluster_arn (döngü kırma).

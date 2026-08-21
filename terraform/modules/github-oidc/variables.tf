@@ -13,6 +13,27 @@ variable "github_repository" {
   }
 }
 
+variable "github_repository_immutable" {
+  description = <<-EOT
+    GitHub'ın OIDC token'ında kullandığı IMMUTABLE ID biçimi:
+    OWNER@<owner_id>/REPO@<repo_id> (örn. tarikemre10@102986030/devops-case@1341157652).
+
+    GitHub, `sub` claim'ini bu biçimde üretmeye başladı; klasik OWNER/REPO
+    kalıbıyla yazılmış trust policy'ler sessizce eşleşmiyor ve
+    "Not authorized to perform sts:AssumeRoleWithWebIdentity" hatası veriyor.
+
+    Değeri bulmak için başarısız çağrının CloudTrail kaydına bakın:
+      aws cloudtrail lookup-events \
+        --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRoleWithWebIdentity \
+        --query 'Events[0].CloudTrailEvent'
+    userIdentity.userName alanı tam `sub` değerini içerir.
+
+    Boş bırakılırsa yalnızca klasik biçim kabul edilir.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "allowed_subjects" {
   description = <<-EOT
     Rolü üstlenebilecek GitHub context'leri (repo: öneki olmadan).

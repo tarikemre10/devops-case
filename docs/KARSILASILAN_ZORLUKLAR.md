@@ -272,13 +272,21 @@ tag'i**. Bu yüzden CI yalnızca `kubectl set image` / `kubectl patch cronjob`
 | 38 | [x] | **CronJob'ın rollout geçmişi yok** | `Deployment`'ta `rollout undo` var, `CronJob`'ta yok. ETL imajı bozuksa geri dönecek bir revizyon bulunmaz ve her saat başı bozuk Job tetiklenmeye devam eder | `etl.yml` patch'ten **önce** mevcut imajı okuyup step output'una yazıyor; doğrulama job'ı başarısız olursa CronJob o değere geri patch'leniyor |
 | 39 | [x] | **`ruff` `runner.py`'de UP017** | Lint eklenince `datetime.now(timezone.utc)` `UP017` verdi. `ETL.py` **değiştirilemez** (Aşama 1 kuralı), ama `runner.py` bizim yazdığımız dosya | `runner.py` `datetime.UTC`'ye geçirildi (py3.12 imajı). `ETL.py` için `ruff.toml`'da `per-file-ignores` — stilistik kurallar kapalı, gerçek hata sınıfı `F` açık kalıyor |
 
+| 40 | [x] | **OIDC `sub` claim'inin immutable-ID biçimi** | Trust policy `repo:tarikemre10/devops-case:*` kalıbıyla yazılmıştı ve her pipeline koşusu `Not authorized to perform sts:AssumeRoleWithWebIdentity` ile düşüyordu. Rol, provider, `aud`, repo adı, branch, `AWS_ROLE_ARN` variable'ı — hepsi tek tek doğrulandı, hepsi doğruydu. Hata mesajı hangi claim'in eşleşmediğini söylemediği için tahminle ilerlemek imkânsızdı | Cevap **CloudTrail**'de: reddedilen `AssumeRoleWithWebIdentity` olayının `userIdentity.userName` alanı gerçek `sub` değerini taşıyor — `repo:tarikemre10@102986030/devops-case@1341157652:ref:refs/heads/master`. GitHub artık sahip ve repo adlarına kalıcı sayısal kimliklerini ekliyor (**immutable ID biçimi**), klasik kalıp eşleşmiyor. Modül iki biçimi de kabul edecek şekilde güncellendi (`github_repository_immutable`). Bu bir gevşetme değil: her iki değer de aynı repoyu gösteriyor, immutable biçim repo yeniden adlandırılsa bile geçerli kaldığı için aslında daha güçlü |
+
 ### Aşama 5 doğrulama kanıtları
 
 Statik (lokal): `actionlint` iki workflow'da da **0 bulgu** ·
 `ruff check` + `ruff format --check` temiz · `terraform fmt -recursive` temiz ·
 `terraform validate` (prod) başarılı.
 
-Cluster/pipeline üzerinde doğrulanacaklar: assume-role ile `kubectl -n mern get deploy`
+Cluster üzerinde doğrulandı: access entry `username: github-actions` olarak eşlendi;
+`kubectl --as=github-actions` ile `get/patch deploy`, `patch cronjobs`, `create/delete jobs`
+**yes**; `get secrets`, `delete deploy`, `patch ingresses`, `patch statefulsets`,
+`get nodes` ve başka namespace'te `patch deploy` **no**. Trust policy iki `sub` biçimini
+de kabul ediyor (madde 40).
+
+Pipeline üzerinde doğrulanacaklar: assume-role ile `kubectl -n mern get deploy`
 çalışır / `kubectl get nodes` ve `get secret` **Forbidden**; PR'da deploy job'ı skipped;
 merge'te ECR'de yeni SHA + rollout Complete + smoke JSON `mongo:"up"`;
 merge sonrası CronJob tag'i değişmemiş; `git grep ORIGIN_VERIFY` yalnız placeholder.

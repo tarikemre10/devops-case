@@ -31,6 +31,23 @@ resource "aws_iam_openid_connect_provider" "github" {
 
 locals {
   oidc_provider_arn = var.create_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
+
+  # `sub` claim'i iki biçimde gelebilir:
+  #   klasik    : repo:OWNER/REPO:<context>
+  #   immutable : repo:OWNER@<id>/REPO@<id>:<context>   ← GitHub'ın yeni biçimi
+  # İkisi de kabul edilir; ikisi de aynı repoyu işaret ettiği için bu bir
+  # gevşetme değildir (immutable biçim, repo yeniden adlandırılsa bile
+  # aynı kimliği gösterdiği için aslında daha güçlüdür).
+  repository_patterns = compact([
+    var.github_repository,
+    var.github_repository_immutable,
+  ])
+
+  allowed_sub_values = flatten([
+    for repo in local.repository_patterns : [
+      for subject in var.allowed_subjects : "repo:${repo}:${subject}"
+    ]
+  ])
 }
 
 data "aws_iam_policy_document" "assume_role" {
@@ -55,7 +72,7 @@ data "aws_iam_policy_document" "assume_role" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [for s in var.allowed_subjects : "repo:${var.github_repository}:${s}"]
+      values   = local.allowed_sub_values
     }
   }
 }
