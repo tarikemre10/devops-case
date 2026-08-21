@@ -2,9 +2,25 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
+data "aws_caller_identity" "current" {}
+
 locals {
   name = "${var.project}-${var.environment}"
   azs  = slice(data.aws_availability_zones.available.names, 0, var.az_count)
+
+  # EKS cluster ARN'i module.eks ÇIKTISINDAN DEĞİL, adından kuruluyor.
+  #
+  # Neden: github_oidc modülü DescribeCluster izni için cluster ARN'ine,
+  # module.eks ise access entry için github_oidc'nin rol ARN'ine ihtiyaç duyar.
+  # İkisi de birbirinin output'unu okursa Terraform "Cycle" hatası verir.
+  # ARN tamamen deterministik (bölge + hesap + cluster adı) olduğu için onu
+  # elde kurup bağımlılığı tek yöne (eks → github_oidc) çeviriyoruz.
+  eks_cluster_arn = "arn:aws:eks:${var.region}:${data.aws_caller_identity.current.account_id}:cluster/${local.name}"
+
+  # Access entry'nin cluster içinde göründüğü Kubernetes kullanıcı adı.
+  # Açıkça sabitleniyor ki aşağıdaki RoleBinding'in subject'i deterministik olsun
+  # (varsayılanda AWS rol ARN'inden türetilmiş bir isim üretir).
+  ci_username = "github-actions"
 
   # /20 bloklar: private 10.0.0.0/20, 10.0.16.0/20 · public 10.0.128.0/20, ...
   private_subnets = [for i in range(var.az_count) : cidrsubnet(var.vpc_cidr, 4, i)]
@@ -64,6 +80,24 @@ module "eks" {
   # Bu satır olmadan cluster'ı yaratan kimlik bile kubectl ile bağlanamaz.
   authentication_mode                      = "API_AND_CONFIG_MAP"
   enable_cluster_creator_admin_permissions = true
+
+  # Aşama 5: CI'ın cluster'a bağlanabilmesi için access entry.
+  #
+  # IAM izni Kubernetes yetkisi DEĞİLDİR: rolün eks:DescribeCluster izni var,
+  # yani `aws eks update-kubeconfig` çalışır — ama access entry olmadan her
+  # kubectl çağrısı "Unauthorized" döner.
+  #
+  # policy_associations BİLEREK BOŞ: hazır AmazonEKSClusterAdminPolicy cluster
+  # geneli admin verirdi. Yetki tamamen aşağıdaki namespace-scoped Role'den
+  # gelir (kubernetes_role_v1.ci_deployer).
+  access_entries = {
+    github_actions = {
+      principal_arn     = module.github_oidc.role_arn
+      type              = "STANDARD"
+      user_name         = local.ci_username
+      kubernetes_groups = []
+    }
+  }
 
   # IRSA: pod başına IAM rolü. EBS CSI ve ALB Controller buna dayanıyor.
   enable_irsa = true
@@ -392,5 +426,78 @@ module "github_oidc" {
   github_repository = var.github_repository
 
   ecr_repository_arns = module.ecr.repository_arns
-  eks_cluster_arn     = module.eks.cluster_arn
+
+  # module.eks.cluster_arn DEĞİL: bkz. locals.eks_cluster_arn (döngü kırma).
+  eks_cluster_arn = local.eks_cluster_arn
+}
+
+# ---------------------------------------------------------------------------
+# CI'ın cluster yetkisi (Aşama 5)
+# ---------------------------------------------------------------------------
+#
+# Pipeline cluster'da yalnızca IMAJ TAG'İ değiştirir (`kubectl set image` ve
+# CronJob patch'i); tam `kubectl apply -k` yapmaz. Bu yüzden ne Secret, ne
+# Ingress, ne StatefulSet, ne de herhangi bir cluster-scope kaynak için yetkisi
+# vardır. Manifest YAPISI değişirse dağıtım elle apply edilir (README).
+
+resource "kubernetes_role_v1" "ci_deployer" {
+  metadata {
+    name      = "ci-deployer"
+    namespace = kubernetes_namespace_v1.app.metadata[0].name
+  }
+
+  # `kubectl set image` + `rollout status` + `rollout undo`
+  rule {
+    api_groups = ["apps"]
+    resources  = ["deployments"]
+    verbs      = ["get", "list", "patch"]
+  }
+
+  # rollout status/undo revizyon geçmişini ReplicaSet'lerden okur.
+  rule {
+    api_groups = ["apps"]
+    resources  = ["replicasets"]
+    verbs      = ["get", "list"]
+  }
+
+  # ETL imaj güncellemesi (etl.yml).
+  rule {
+    api_groups = ["batch"]
+    resources  = ["cronjobs"]
+    verbs      = ["get", "list", "patch"]
+  }
+
+  # etl.yml deploy sonrası CronJob'dan tek seferlik doğrulama Job'ı üretip siler.
+  rule {
+    api_groups = ["batch"]
+    resources  = ["jobs"]
+    verbs      = ["get", "list", "watch", "create", "delete"]
+  }
+
+  # Yalnızca hata ayıklama çıktısı için; hiçbir yazma fiili yok.
+  rule {
+    api_groups = [""]
+    resources  = ["pods", "pods/log", "events"]
+    verbs      = ["get", "list"]
+  }
+}
+
+resource "kubernetes_role_binding_v1" "ci_deployer" {
+  metadata {
+    name      = "ci-deployer"
+    namespace = kubernetes_namespace_v1.app.metadata[0].name
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role_v1.ci_deployer.metadata[0].name
+  }
+
+  # Access entry'deki user_name ile birebir aynı olmalı.
+  subject {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "User"
+    name      = local.ci_username
+  }
 }
