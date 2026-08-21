@@ -53,6 +53,31 @@ app.use(express.json());
 app.use("/record", records);
 app.use("/healthcheck", healthcheck);
 
+// Merkezi hata middleware'i. record.mjs'teki `wrap` sarmalayıcısı sayesinde
+// async handler hataları buraya düşer.
+//
+// MongoDB erişilemezken 503 döndürülür: bu geçici bir bağımlılık hatasıdır,
+// uygulama bozuk değildir — istemci ve ALB için 500'den daha doğru sinyal.
+// Yanıt, serverSelectionTimeoutMS (5sn) dolar dolmaz gider; istek asılı kalmaz.
+// eslint-disable-next-line no-unused-vars -- Express hata middleware'i 4 argüman ister.
+app.use((err, req, res, next) => {
+  const isMongo = typeof err?.name === "string" && err.name.startsWith("Mongo");
+
+  logger.error({ err: err.message, name: err.name, path: req.originalUrl }, "request.failed");
+
+  if (res.headersSent) return;
+
+  if (isMongo) {
+    res.status(503).send({ error: "database unavailable" });
+  } else if (err?.name === "BSONError" || err?.name === "BSONTypeError") {
+    // Geçersiz ObjectId istemci hatasıdır; 500 yanlış sinyal verir ve
+    // Prometheus'ta sahte 5xx alarmı üretir.
+    res.status(400).send({ error: "invalid id" });
+  } else {
+    res.status(500).send({ error: "internal server error" });
+  }
+});
+
 const server = app.listen(PORT, HOST, () => {
   logger.info({ port: PORT, host: HOST, env: process.env.NODE_ENV }, "server.listening");
 });
@@ -83,3 +108,43 @@ function shutdown(signal) {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
+
+// MongoDB kesintisi süreci ÖLDÜRMEMELİ.
+//
+// Ölçüm: `kubectl delete pod mongodb-0` sonrası üç backend pod'u da
+// exitCode 1 ile restart etti ve kesinti 26 saniye sürdü. Sebep, driver'ın
+// topology monitörünün `MongoServerSelectionError: getaddrinfo ENOTFOUND
+// mongodb-0.mongodb...` hatasını bir zamanlayıcı callback'inden fırlatması:
+// hata hiçbir istek try/catch'ine düşmüyor, doğrudan uncaughtException olup
+// süreci sonlandırıyor. Bu, healthcheck.mjs'teki "liveness bağımlılık kontrol
+// etmez ki kısa Mongo kesintisi pod'ları restart ettirmesin" tasarımını da
+// boşa çıkarıyordu.
+//
+// Mongo kaynaklı hatalarda: logla ve ayakta kal. Readiness probe'u ping
+// atamadığı için pod'u Service endpoint'lerinden zaten çıkarır, driver Mongo
+// geri gelince kendi yeniden bağlanır ve pod restart'sız hazır duruma döner.
+// Mongo dışı hatalarda davranış değişmez: bilinmeyen bir durumda çalışmaya
+// devam etmek, restart'tan daha risklidir.
+function isMongoError(err) {
+  return typeof err?.name === "string" && err.name.startsWith("Mongo");
+}
+
+process.on("uncaughtException", (err) => {
+  if (isMongoError(err)) {
+    logger.error({ err: err.message, name: err.name }, "mongo.transient_error");
+    return;
+  }
+
+  logger.fatal({ err: err.message, stack: err.stack }, "process.uncaught_exception");
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  if (isMongoError(reason)) {
+    logger.error({ err: reason.message, name: reason.name }, "mongo.transient_error");
+    return;
+  }
+
+  logger.fatal({ err: reason?.message ?? String(reason) }, "process.unhandled_rejection");
+  process.exit(1);
+});
