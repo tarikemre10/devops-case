@@ -1,0 +1,35 @@
+# Aşama 7 güvenlik kontrol listesi maddesi.
+# Haftalık; her ekosistem için açık PR sayısı sınırlı ki inceleme kuyruğu şişmesin.
+
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /mern-project/client
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    directory: /mern-project/server
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: pip
+    directory: /python-project
+    schedule:
+      interval: weekly
+
+  # Base image'lar SHA256 digest ile pinli (Aşama 2); Dependabot digest'i
+  # günceller, aksi hâlde pinleme "eskiyi dondurma"ya dönüşür.
+  - package-ecosystem: docker
+    directories:
+      - /docker
+    schedule:
+      interval: weekly
+
+  # Workflow'lardaki action'lar da commit SHA ile pinli — aynı gerekçe.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
