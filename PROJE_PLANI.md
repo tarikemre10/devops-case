@@ -15,9 +15,12 @@ Case metni: `Case Tanıtım Metni_Tr.txt` · Kabul kriterleri: `README.md` · He
 > · CloudFront (`envs/edge`) apply edildi: public HTTPS ayakta, ALB'ye doğrudan erişim 403.
 > · **Maliyet:** cluster hâlâ çalışıyor — ekran görüntüleri alındıktan sonra `destroy` şart.
 >
-> · **Aşama 5 yazıldı:** `mern.yml` + `etl.yml` (OIDC, Trivy, e2e, otomatik rollback),
->   EKS access entry + namespace-scoped `ci-deployer` RBAC, Dependabot.
->   `terraform apply` ve ilk pipeline koşusu bekliyor.
+> · **Aşama 5 tamamlandı ve canlı koştu:** `mern.yml` + `etl.yml` (OIDC, Trivy, e2e,
+>   otomatik rollback), EKS access entry + namespace-scoped `ci-deployer` RBAC,
+>   Dependabot. PR #19 merge'ünde her iki pipeline da uçtan uca çalıştı: üç imaj da
+>   `422111a` tag'iyle ECR'de, backend/frontend **revision 2**'de aynı tag'i çalıştırıyor,
+>   ETL CronJob'ı da yeni tag'e geçti ve iki koşusu `succeeded`. Rollback tetiklenmedi.
+>   (İlk koşu OIDC `sub` biçimi yüzünden düşmüştü — madde 40, `afc38c8` ile kapandı.)
 >
 > · **Aşama 6 tamamlandı ve cluster üzerinde doğrulandı:** monitoring yığını apply
 >   edildi (8 kaynak), 10/10 pod Running, iki PVC gp3'te Bound, 9 alert kuralı
@@ -26,8 +29,8 @@ Case metni: `Case Tanıtım Metni_Tr.txt` · Kabul kriterleri: `README.md` · He
 >   bilerek CrashLoop'a sokulan test pod'u → `PodCrashLooping` FIRING → Alertmanager.
 >   Bulunan bir kural hatası (`FrontendNotReady` container adı) düzeltildi.
 >
-> **Sıradaki:** Aşama 5 pipeline'ının canlı koşusu, Aşama 7 güvenlik listesi,
-> Aşama 8 ekran görüntüleri — ardından `terraform destroy`.
+> **Sıradaki:** Aşama 7 güvenlik listesi, Aşama 8 ekran görüntüleri ve teslim
+> README'si — ardından `terraform destroy`.
 > Ayrıntılar ve doğrulama kanıtları: `docs/KARSILASILAN_ZORLUKLAR.md`
 
 ---
@@ -288,7 +291,7 @@ k8s/
 
 ---
 
-## Aşama 5 — CI/CD (GitHub Actions) ✅ **YAZILDI**
+## Aşama 5 — CI/CD (GitHub Actions) ✅ **TAMAMLANDI**
 
 > **Tasarım kararı:** CI tam `kubectl apply -k` yapmaz, yalnızca **imaj tag'ini**
 > günceller (`set image` / `patch cronjob`). Böylece RBAC beş kurala iner ve

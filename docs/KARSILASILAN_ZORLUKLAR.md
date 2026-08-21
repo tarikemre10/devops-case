@@ -286,10 +286,27 @@ Cluster üzerinde doğrulandı: access entry `username: github-actions` olarak e
 `get nodes` ve başka namespace'te `patch deploy` **no**. Trust policy iki `sub` biçimini
 de kabul ediyor (madde 40).
 
-Pipeline üzerinde doğrulanacaklar: assume-role ile `kubectl -n mern get deploy`
-çalışır / `kubectl get nodes` ve `get secret` **Forbidden**; PR'da deploy job'ı skipped;
-merge'te ECR'de yeni SHA + rollout Complete + smoke JSON `mongo:"up"`;
-merge sonrası CronJob tag'i değişmemiş; `git grep ORIGIN_VERIFY` yalnız placeholder.
+**Pipeline canlı koştu ve doğrulandı** (PR #19 merge'ü, commit `422111a`). Kanıtlar
+cluster ve ECR üzerinden, GitHub Actions arayüzüne bakmadan okunabiliyor:
+
+| Kanıt | Ölçüm |
+|---|---|
+| Build + Trivy + push çalıştı | ECR'de üç repoda da `422111a2d8bc...` tag'i var. Tarama push'tan **önce** yapıldığı için tag'in varlığı taramanın da geçtiğini gösterir |
+| `kubectl set image` + rollout çalıştı | `backend`/`frontend` **revision 2**; eski ReplicaSet'ler `2d9e9c04f433` tag'iyle 0'a çekilmiş, yeni ReplicaSet'ler merge SHA'sıyla 2 replica'da |
+| Otomatik rollback tetiklenmedi | Revizyon 3 yok, çalışan tag merge SHA'sı — yani `rollout status` ve smoke geçti, `rollout undo` hiç çalışmadı |
+| `etl.yml` ayrı olarak koştu | CronJob'ın imajı da merge SHA'sına geçmiş; `etl-29788920` (18:00) eski tag'le, `etl-29788980` (19:00) ve `etl-29789040` (20:00) **yeni tag'le `succeeded: 1`** |
+| ECR ayarları | Üç repo da `IMMUTABLE` + `scanOnPush: true` |
+
+> **Not:** İlk koşuda pipeline OIDC `sub` biçimi yüzünden düştü (madde 40); trust
+> policy düzeltildikten (`afc38c8`) sonraki koşu uçtan uca geçti. Yukarıdaki
+> tag'ler o başarılı koşunun çıktısıdır.
+
+Ayrıca doğrulanmış: `git grep ORIGIN_VERIFY` yalnızca placeholder döndürüyor —
+origin-verify sırrı pipeline'a hiç girmiyor (Aşama 5'in tasarım kararı).
+
+GitHub arayüzünden bakılırsa görülecekler (kayıt için): PR koşusunda `build` ve
+`deploy` job'ları **skipped** (`if: github.event_name != 'pull_request'`),
+master koşusunda smoke adımının `mongo:"up"` çıktısı.
 
 ---
 
