@@ -390,3 +390,50 @@ Alertmanager'da firing alert, `kubectl -n monitoring get pods`.
 > Terraform bağımlılık sırasıyla önce silinir, ama artakalan PVC/volume için
 > `kubectl -n monitoring delete pvc --all` doğrulaması şart — aksi halde VPC destroy'u
 > asılı kalır.
+
+---
+
+## Aşama 7 — Güvenlik Kontrol Listesi
+
+Liste **ölçülerek** kapatıldı: her madde için çalışan sistemden bir çıktı alındı.
+Kontrol listesinin kendisi `PROJE_PLANI.md` Aşama 7'de; burada ölçüm komutları ve
+sonuçları var, böylece bağımsız olarak tekrarlanabilir.
+
+| Madde | Komut | Ölçülen sonuç |
+|---|---|---|
+| Git'te düz secret | `git ls-files \| grep -E "\.tfstate\|\.tfvars$\|kubeconfig\|config\.env\|\.pem$\|\.key$"` | **boş** |
+| Container sertliği | `kubectl -n mern get pods -o json` → securityContext | 5/5 pod `roFS=true`, `privEsc=false`, `drop=[ALL]`; pod seviyesinde `runAsNonRoot=true` |
+| Gerçek kullanıcı | `kubectl -n mern exec deploy/backend -- id` | `uid=1000(node) gid=1000(node)` |
+| NetworkPolicy **etkisi** | `mern`'e etiketsiz test pod'u + `nc -z -w4` | `mongodb-0.mongodb:27017` → **ENGELLENDİ**, `backend:5050` → **ENGELLENDİ** |
+| NetworkPolicy ön koşulu | `kubectl -n kube-system get ds aws-node -o json` | `aws-eks-nodeagent --enable-network-policy=true` · `NETWORK_POLICY_ENFORCING_MODE=standard` |
+| Trivy bloklayıcı | `.github/workflows/mern.yml` | `severity: HIGH,CRITICAL` · `ignore-unfixed: true` · **`exit-code: "1"`**; `load: true` → Trivy → `docker push` sırası |
+| MongoDB kapalı | `kubectl -n mern get svc mongodb` | `ClusterIP`, `clusterIP: None` (headless), Ingress yok |
+| MongoDB auth | pod içinden kimliksiz `listDatabases` | `MongoServerError: Command listDatabases requires authentication` |
+| CloudFront TLS | `curl http://<id>.cloudfront.net/` | **301** |
+| ALB doğrudan erişim | `curl http://k8s-mern-...elb.amazonaws.com/` | **403** |
+| Node role yetkisi | `aws iam list-attached-role-policies` | Yalnız `AmazonEKSWorkerNodePolicy`, `AmazonEKS_CNI_Policy`, `AmazonEC2ContainerRegistryReadOnly` |
+| IRSA rolleri | `aws iam list-roles` | `...-ebs-csi`, `...-alb-controller`, `...-github-actions` ayrı ayrı |
+| ECR | `aws ecr describe-repositories` | 3 repo: `scanOnPush=True`, `IMMUTABLE` |
+| OIDC | `aws iam get-role --role-name mern-devops-case-github-actions` | Principal `token.actions.githubusercontent.com`, Action `sts:AssumeRoleWithWebIdentity` |
+| Uzun ömürlü anahtar | `grep -rn "secrets\." .github/workflows/` | **hiç eşleşme yok** — workflow'lar yalnız `vars.*` kullanıyor |
+| Root MFA | `aws iam get-account-summary` | `AccountMFAEnabled = 1` |
+| Billing alarmı | `aws budgets describe-budgets` | *My Monthly Cost Budget* — **40 USD** |
+| Monitoring dışa kapalı | `kubectl -n monitoring get svc,ingress` | 12 Service'in tamamı `ClusterIP`, **Ingress yok** |
+
+### `git grep` ile bulunan üç "secret benzeri" satır — üçü de gerçek sır değil
+
+Tarama şu üçünü döndürüyor; bilerek bırakıldılar:
+
+| Dosya | Neden sorun değil |
+|---|---|
+| `docker-compose.yml:41` | Yalnız **lokal geliştirme** varsayılanı (`${MONGO_PASSWORD:-devpassword}`); cluster'a hiç gitmiyor |
+| `mern-project/server/.env-example` | Placeholder (`<user>:<pass>`), gerçek değer değil |
+| `terraform/envs/prod/main.tf:374` | `format()` şablonu; parola `random_password.mongo_root.result` değişkeninden geliyor, dosyada düz metin yok |
+
+### Bilinçli istisna: `node-exporter` hostNetwork + hostPath
+
+"Tüm container'lar non-root/read-only" maddesi **uygulama namespace'i** için geçerlidir.
+`node-exporter` node metriğini okumak için `hostNetwork` ve `/proc`, `/sys`, `/` hostPath
+mount'larına ihtiyaç duyar — başka yolu yoktur. Bu yüzden `monitoring` namespace'ine PSA
+`restricted` etiketi konmaz (madde 45), `mern` namespace'ine konur. Sınır net: sertlik
+uygulama iş yüklerinde tavizsiz, gözlemlenebilirlik ajanında gerektiği kadar gevşek.

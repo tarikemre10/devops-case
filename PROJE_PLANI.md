@@ -376,20 +376,67 @@ Chart sürümleri **tam pinli** (`~>` değil): `kube-prometheus-stack 88.5.3`,
 
 ---
 
-## Aşama 7 — Güvenlik Kontrol Listesi
+## Aşama 7 — Güvenlik Kontrol Listesi ✅ **TAMAMLANDI**
 
-- [ ] Git'te düz secret yok; `.gitignore`'a `config.env`, `*.tfvars`, `kubeconfig`, `*.tfstate` eklendi
-- [ ] Tüm container'lar non-root, read-only rootfs, `drop: ALL`
-- [ ] NetworkPolicy default-deny
-- [ ] Image'larda Trivy taraması CI'da bloklayıcı (`--ignore-unfixed`)
-- [ ] MongoDB dışarıya açık değil (ClusterIP), auth açık, parola `random_password` ile üretilmiş
-- [ ] **CloudFront'ta TLS zorunlu (`redirect-to-https`); ALB Security Group yalnız
-      `com.amazonaws.global.cloudfront.origin-facing` prefix list'ine açık** → ALB'ye doğrudan erişim kapalı
-- [ ] IRSA ile pod bazlı en az yetki; node role'ünde geniş izin yok
-- [ ] ECR image scan on push açık
-- [ ] GitHub Actions OIDC; uzun ömürlü AWS anahtarı yok
-- [ ] Root hesapta MFA, billing alarmı kurulu
-- [ ] Dependabot açık
+Her madde **çalışan sistem üzerinde ölçülerek** işaretlendi; hiçbiri "yazdık, öyledir"
+kabulüyle geçilmedi. Ölçüm komutları ve çıktıları:
+`docs/KARSILASILAN_ZORLUKLAR.md` → *Aşama 7 doğrulama kanıtları*.
+
+- [x] **Git'te düz secret yok.** `.gitignore`'da `config.env`, `*.tfvars` (`!*.tfvars.example`),
+      `kubeconfig*`, `*.tfstate*`, `**/.terraform/*`. `git ls-files` ile tarandı:
+      izlenen tek bir state/tfvars/kubeconfig/anahtar dosyası yok.
+- [x] **Uygulama container'ları non-root, read-only rootfs, `drop: ALL`.**
+      Beş pod'un tamamında `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`,
+      `capabilities.drop: [ALL]`; pod seviyesinde `runAsNonRoot: true` + `seccompProfile: RuntimeDefault`.
+      Container içinden doğrulandı: backend `uid=1000(node)`.
+      *İstisna:* `node-exporter` `hostNetwork` + `/proc`,`/sys`,`/` hostPath kullanır —
+      node metriği başka türlü okunamaz. Bu yüzden `monitoring` namespace'i PSA `restricted`
+      etiketi almaz; uygulama namespace'i alır (madde 45).
+- [x] **NetworkPolicy default-deny — ve gerçekten engelliyor.** 9 policy aktif.
+      `mern` namespace'ine etiketsiz bir test pod'u kondu: `mongodb-0.mongodb:27017`
+      **ENGELLENDİ**, `backend:5050` **ENGELLENDİ**. Ön koşul da doğrulandı:
+      `aws-eks-nodeagent --enable-network-policy=true`, `NETWORK_POLICY_ENFORCING_MODE=standard`.
+- [x] **Trivy CI'da bloklayıcı.** `severity: HIGH,CRITICAL`, `ignore-unfixed: true`,
+      **`exit-code: "1"`**. Sıra kritik: imaj önce `load: true` ile yalnız yerel daemon'a
+      alınır, Trivy koşar, `docker push` **ondan sonra** gelir — taranmamış imaj registry'ye giremez.
+- [x] **MongoDB dışarıya kapalı, auth açık.** Service `ClusterIP` + headless (`clusterIP: None`),
+      Ingress yok. Auth ölçüldü: pod içinden kimliksiz `listDatabases` →
+      `MongoServerError: Command listDatabases requires authentication`.
+      Parola Terraform `random_password` (32 hane) → K8s Secret; hiçbir dosyada düz metin yok.
+- [x] **CloudFront'ta TLS zorunlu; ALB'ye doğrudan erişim kapalı.**
+      `http://<id>.cloudfront.net` → **301** (redirect-to-https).
+      ALB DNS adına doğrudan `http` → **403**.
+      > **Sapma:** Kapatma, planlanan Security Group prefix list'i yerine paylaşılan
+      > **`X-Origin-Verify` header'ı** ile yapıldı (madde G). Sebep: prefix list kuralını
+      > ALB Controller'ın yönettiği SG'ye Terraform'dan eklemek, controller'ın kuralı geri
+      > almasıyla çakışıyordu. Sonuç aynı, sahiplik tek elde.
+- [x] **IRSA ile en az yetki; node role'ünde geniş izin yok.**
+      Node role'de yalnız üç AWS yönetimli politika: `AmazonEKSWorkerNodePolicy`,
+      `AmazonEKS_CNI_Policy`, `AmazonEC2ContainerRegistryReadOnly` — `*` yetkisi yok.
+      Pod bazlı roller ayrı: `...-ebs-csi`, `...-alb-controller`.
+      CI'ın cluster yetkisi de namespace-scoped `ci-deployer` Role'ü (5 kural, Secret okuma yok).
+- [x] **ECR scan-on-push açık.** Üç repo da `scanOnPush: true` **ve** `IMMUTABLE` —
+      push edilmiş bir tag'in içeriği sonradan değiştirilemez.
+- [x] **GitHub Actions OIDC; uzun ömürlü AWS anahtarı yok.** OIDC provider
+      `token.actions.githubusercontent.com` kurulu; rol yalnız `sts:AssumeRoleWithWebIdentity`
+      ile üstlenilebiliyor. Workflow'larda **hiç `secrets.*` referansı yok** — sadece `vars.*`.
+- [x] **Root hesapta MFA, billing alarmı kurulu.** `AccountMFAEnabled = 1`;
+      budget *"My Monthly Cost Budget"* **40 USD**.
+- [x] **Dependabot açık.** `.github/dependabot.yml` — haftalık, ekosistem başına
+      açık PR sınırı 5 (inceleme kuyruğu şişmesin).
+
+### Aşama 6 ile eklenen güvenlik maddeleri
+
+- [x] **Grafana / Prometheus / Alertmanager dışarı açık değil.** `monitoring` namespace'inde
+      **Ingress yok**, 12 Service'in tamamı `ClusterIP`. Erişim yalnız `kubectl port-forward`.
+      İkinci bir public giriş açmak yukarıdaki ALB kısıtını delerdi.
+- [x] **Grafana admin parolası git'te değil.** Terraform `random_password` → `grafana-admin`
+      Secret → chart `admin.existingSecret`. Okumak için:
+      `terraform -chdir=terraform/envs/prod output -raw grafana_admin_password`.
+- [x] **Slack webhook'u git'e girmiyor.** `var.slack_webhook_url` `sensitive`, varsayılanı boş;
+      değer yalnız `TF_VAR_slack_webhook_url` ile verilir.
+- [x] **Loglarda kimlik bilgisi maskeli.** `pino-http` tüm istek header'larını yazar;
+      `logger.mjs`'te `authorization`, `cookie`, `set-cookie` → `[redacted]` (madde 51).
 
 ---
 
