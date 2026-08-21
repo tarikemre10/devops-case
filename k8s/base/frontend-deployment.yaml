@@ -31,8 +31,36 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       terminationGracePeriodSeconds: 30
+
+      # Replica'ları node'lara yay. `ScheduleAnyway` BİLEREK seçildi:
+      # HPA backend'i 6'ya kadar ölçekliyor ve node sayısı 3 — katı
+      # (DoNotSchedule / requiredDuringScheduling anti-affinity) bir kural
+      # 4. pod'dan itibaren Pending üretir, yani ölçeklemeyi kilitler.
+      # Yumuşak kural normalde yayar, yer yoksa yine de yerleştirir.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: frontend
+
       containers:
         - name: nginx
+          # ALB target'ının kaydı silinirken pod ölmemeli.
+          #
+          # Ölçülen sorun: node drain testinde 100 isteğin 8'i 502/timeout aldı.
+          # Sebep: pod SIGTERM'i endpoint kaydı ALB'den düşmeden önce alıyor;
+          # ALB birkaç saniye daha ölmekte olan hedefe istek göndermeye devam
+          # ediyor. Kubernetes'in endpoint kaldırması ile ALB'nin deregister
+          # çağrısının yayılması eşzamanlı değildir.
+          #
+          # preStop bu boşluğu kapatır: container 15 saniye daha istek
+          # karşılamaya devam eder, ALB o sırada hedefi listeden düşürür.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 15"]
           image: mern-client # tag overlay'de `images:` ile verilir
           ports:
             - name: http

@@ -360,10 +360,10 @@ list'ine açık, ikinci bir public giriş §güvenlik listesini bozar.
 |---|---|
 | Trafik artışı | Backend HPA 2→6. **Node sayısı sabit (3 × `t3.medium`)** — Cluster Autoscaler kapsam dışı, sınır README'de yazılı |
 | Pod ölümü | Deployment yeniden yaratır; readiness hazır olmadan trafik gitmez |
-| Node kaybı | 2 AZ + 3 node + PDB (`minAvailable: 1`) + pod anti-affinity ile en az 1 replica ayakta |
+| Node kaybı | 2 AZ + 3 node + PDB (`minAvailable: 1`) + `topologySpreadConstraints` (`maxSkew: 1`, **`ScheduleAnyway`** — katı kural HPA'nın 6'ya ölçeklemesini kilitlerdi). Drain testinde ölçüldü: pod'lar taşındı, **110/110 istek 200**. Kesintisizlik `preStop` hook'una bağlıdır (madde 53) |
 | Bellek baskısı | Monitoring'e **~8.4 GiB** kalır (3 node, ölçülen 3.37 GiB/node üzerinden). Tahmini yük ~5 GiB → rahat. Tampon kuralı yine de geçerli |
 | Kötü deploy | `maxUnavailable: 0` rolling update; rollout fail → otomatik `rollout undo` |
-| DB verisi | EBS gp3 PVC kalıcı; StatefulSet yeniden planlanınca aynı volume bağlanır |
+| DB verisi | EBS gp3 PVC kalıcı; StatefulSet yeniden planlanınca aynı volume bağlanır — **ancak yalnızca aynı AZ içinde**. AZ kaybı tek replica'lı MongoDB için kurtarılamaz (madde 55) |
 | Statik içerik yükü | CloudFront edge cache (`/api/*` hariç) |
 
 ### Bilinen sınırlar (README'de açıkça belirtilir)

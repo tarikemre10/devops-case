@@ -31,8 +31,27 @@ spec:
       # server.mjs SIGTERM'de bağlantıları düzgün kapatıyor (Aşama 1),
       # tini PID 1 olduğu için sinyal gerçekten iletiliyor.
       terminationGracePeriodSeconds: 30
+
+      # Gerekçe frontend-deployment.yaml'daki ile aynı: HPA 2→6 ölçekliyor,
+      # node 3 tane — katı kural ölçeklemeyi kilitlerdi.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+
       containers:
         - name: backend
+          # server.mjs SIGTERM'i alır almaz yeni bağlantı kabul etmeyi bırakır.
+          # Endpoint'in kube-proxy/nginx tarafına yayılması ise birkaç yüz ms
+          # sürer; bu boşlukta gelen istek "connection refused" alır.
+          # preStop kapanışı 5 saniye geciktirerek yayılmayı bekletir.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
           image: mern-server # tag overlay'de `images:` ile verilir
           ports:
             - name: http

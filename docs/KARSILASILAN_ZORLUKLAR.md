@@ -437,3 +437,47 @@ Tarama şu üçünü döndürüyor; bilerek bırakıldılar:
 mount'larına ihtiyaç duyar — başka yolu yoktur. Bu yüzden `monitoring` namespace'ine PSA
 `restricted` etiketi konmaz (madde 45), `mern` namespace'ine konur. Sınır net: sertlik
 uygulama iş yüklerinde tavizsiz, gözlemlenebilirlik ajanında gerektiği kadar gevşek.
+
+---
+
+## Dayanıklılık testleri — "pod ölürse ne olur, node ölürse ne olur"
+
+Deployment/PDB/probe yapılandırmaları yazılmıştı ama **kendini iyileştirme davranışı
+hiç ölçülmemişti**. Yapılandırmanın varlığı davranışın kanıtı değildir; iki test
+yapıldı ve ikisi de gerçek kusur ortaya çıkardı.
+
+### Test 1 — Pod ölümü (kesintisiz)
+
+`backend` pod'larından biri silindi; bu sırada public URL'e 0.5 sn aralıkla 80 istek.
+
+**Sonuç: 80/80 → `200`.** Pod otomatik yeniden yaratıldı, kesinti olmadı.
+Replica 2 + `maxUnavailable: 0` + readiness probe birlikte çalışıyor.
+
+### Test 2 — Node devre dışı (`kubectl drain`) — **kusur bulundu**
+
+`ip-10-0-2-126` (eu-central-1a) drain edildi; üzerinde backend, frontend,
+kube-state-metrics ve Prometheus vardı. Eşzamanlı 100 istek.
+
+**İlk ölçüm: 92 × `200`, 3 × `502`, 5 × bağlantı hatası.** Pod'lar kalan iki node'a
+düzgün taşındı, ama **~8 istek düştü**.
+
+| # | Durum | Sorun | Çözüm |
+|---|---|---|---|
+| 53 | [x] | **ALB hedefi silinmeden pod ölüyor → 502** | Pod `SIGTERM`'i, endpoint kaydı ALB'den düşmeden alıyor. Kubernetes'in endpoint kaldırması ile ALB'nin deregister çağrısının yayılması eşzamanlı değil; ALB birkaç saniye daha ölmekte olan hedefe istek göndermeye devam ediyor. Yapılandırmaya bakarak fark edilmesi zor — yalnızca canlı drain testinde görünüyor | Frontend'e `preStop: sleep 15`, backend'e `preStop: sleep 5` (backend ALB'ye değil nginx'e bakıyor, endpoint yayılımı daha hızlı). Ayrıca Ingress'e `deregistration_delay.timeout_seconds=30` — varsayılan 300 sn, hedef gereksiz yere 5 dakika "draining" kalıyordu. **Tekrar ölçüm: 110/110 → `200`, kesinti tamamen kalktı** |
+| 54 | [x] | **`topologySpreadConstraints` hiç yoktu — `MIMARI.md` ise "pod anti-affinity" olduğunu yazıyordu** | Replica'ların node'lara dağılması yalnızca scheduler'ın varsayılan davranışına kalmıştı; garanti değildi. Doküman ile gerçek ayrışmıştı | backend ve frontend'e `maxSkew: 1`, `topologyKey: kubernetes.io/hostname` eklendi. **`whenUnsatisfiable: ScheduleAnyway` bilinçli:** HPA backend'i 6'ya ölçekliyor, node 3 tane — katı bir kural (`DoNotSchedule` / `requiredDuringScheduling`) 4. pod'dan itibaren `Pending` üretir ve **ölçeklemeyi kilitler**. Yumuşak kural normalde yayar, yer yoksa yine de yerleştirir. `MIMARI.md` gerçeğe göre düzeltildi |
+| 55 | [ ] | **EBS PVC'si AZ'ye bağlıdır — tek node'lu AZ tek hata noktasıdır** | Drain sırasında `prometheus-...-0` **`Pending`** kaldı. Sebep: PVC'si `eu-central-1a`'da ve o AZ'de tek node var. `uncordon` ile geri geldi. Aynı risk MongoDB için de var — PVC'si `eu-central-1b`'de; orada iki node olduğu için **node** kaybını atlatır, ama **AZ** kaybını atlatamaz | Kabul edilen sınır (kapsam kararı: tek replica StatefulSet). Prod yolu: AZ başına en az iki node, MongoDB ReplicaSet (her replica kendi PVC'siyle farklı AZ'de) ya da AZ-bağımsız EFS/DocumentDB. README §9'da yazılı |
+
+### Ölçülen dayanıklılık özeti
+
+| Senaryo | Davranış | Ölçüm |
+|---|---|---|
+| Pod ölümü | Otomatik yeniden yaratma, kesinti yok | 80/80 → 200 |
+| Node devre dışı | Pod'lar kalan node'lara taşınır, kesinti yok | 110/110 → 200 (düzeltme sonrası) |
+| Kötü deploy | `maxUnavailable: 0` + smoke başarısızsa otomatik `rollout undo` | Aşama 5 |
+| Trafik artışı | Backend HPA 2→6 | Aşama 4 |
+| Planlı bakım | PDB `minAvailable: 1` — drain en fazla bir replica'yı alır | Test 2'de doğrulandı |
+| **AZ kaybı** | **MongoDB ve Prometheus geri gelemez** (EBS AZ-bağımlı) | Madde 55 — bilinçli sınır |
+
+> **Testin asıl dersi:** "replica 2 + PDB + probe yazdık" demek dayanıklılık kanıtı
+> değildir. İlk drain testi olmasaydı 502'ler teslimde değil, gerçek bir bakım
+> penceresinde ortaya çıkardı.

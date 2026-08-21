@@ -187,6 +187,19 @@ Backend istek logunda `authorization`, `cookie`, `set-cookie` **maskelidir**;
 
 **Metrikler** — kube-prometheus-stack (node-exporter, kube-state-metrics).
 
+**Dayanıklılık — yapılandırma değil, ölçüm:**
+
+| Senaryo | Ölçülen sonuç |
+|---|---|
+| Pod silindi | **80/80 istek 200** — otomatik yeniden yaratma, kesinti yok |
+| Node drain edildi | **110/110 istek 200** — pod'lar kalan node'lara taşındı |
+
+> İlk drain testi **8 başarısız istek** (502 + timeout) gösterdi: pod, ALB hedef
+> kaydı silinmeden ölüyordu. `preStop` hook'ları ve `deregistration_delay`
+> ayarıyla kapatıldı, test tekrarlandı ve kesinti sıfırlandı
+> ([madde 53](docs/KARSILASILAN_ZORLUKLAR.md)). Test edilmeseydi bu, teslimde
+> değil gerçek bir bakım penceresinde ortaya çıkardı.
+
 **Alarmlar** — 9 kural: `PodCrashLooping` · `BackendNotReady` · `FrontendNotReady` ·
 `MongoDiskFilling` · **`ETLJobMissing`** · `ETLJobFailed` · `NodeNotReady` ·
 `NodeMemoryPressure` · `NodeDiskPressure`.
@@ -255,6 +268,7 @@ Her biri bilinçli bir kesimdir, unutulmuş bir eksik değil.
 | Sabit 3 node | HPA 2→6 (backend) | Cluster Autoscaler / Karpenter |
 | Backend'de `/metrics` yok | kube-state-metrics üzerinden pod metrikleri | `prom-client` ile uygulama metrikleri |
 | Alloy tek replica | API tabanlı log toplama, çoğaltma yok | Alloy clustering ya da DaemonSet + `loki.source.file` |
+| **AZ kaybı kurtarılamaz** — EBS PVC'si AZ'ye bağlı | Node kaybı atlatılıyor (drain testiyle ölçüldü); AZ kaybında MongoDB ve Prometheus geri gelemez | AZ başına ≥2 node + MongoDB ReplicaSet (her replica ayrı AZ) ya da DocumentDB/EFS |
 | ALB 5xx alarmı yok | `BackendNotReady` + `PodCrashLooping` | CloudWatch exporter ya da metric-math alarmı |
 
 ---
