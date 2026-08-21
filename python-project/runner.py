@@ -18,7 +18,7 @@ import runpy
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 ETL_SCRIPT = os.environ.get("ETL_SCRIPT", os.path.join(os.path.dirname(__file__), "ETL.py"))
 
@@ -26,7 +26,7 @@ ETL_SCRIPT = os.environ.get("ETL_SCRIPT", os.path.join(os.path.dirname(__file__)
 def log(level, msg, **fields):
     """Tek satır JSON log — Grafana Alloy stdout'tan bunu toplar."""
     record = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
         "level": level,
         "service": "etl",
         "msg": msg,

@@ -15,7 +15,11 @@ Case metni: `Case Tanıtım Metni_Tr.txt` · Kabul kriterleri: `README.md` · He
 > · CloudFront (`envs/edge`) apply edildi: public HTTPS ayakta, ALB'ye doğrudan erişim 403.
 > · **Maliyet:** cluster hâlâ çalışıyor — ekran görüntüleri alındıktan sonra `destroy` şart.
 >
-> **Sıradaki:** Aşama 5 — CI/CD (GitHub Actions).
+> · **Aşama 5 yazıldı:** `mern.yml` + `etl.yml` (OIDC, Trivy, e2e, otomatik rollback),
+>   EKS access entry + namespace-scoped `ci-deployer` RBAC, Dependabot.
+>   `terraform apply` ve ilk pipeline koşusu bekliyor.
+>
+> **Sıradaki:** Aşama 6 — Logging, Monitoring, Alerting.
 > Ayrıntılar ve doğrulama kanıtları: `docs/KARSILASILAN_ZORLUKLAR.md`
 
 ---
@@ -276,24 +280,51 @@ k8s/
 
 ---
 
-## Aşama 5 — CI/CD (GitHub Actions)
+## Aşama 5 — CI/CD (GitHub Actions) ✅ **YAZILDI**
 
-**Pipeline A — `mern.yml`** (tetik: `mern-project/**` değişikliği)
-1. Lint & unit test (client)
+> **Tasarım kararı:** CI tam `kubectl apply -k` yapmaz, yalnızca **imaj tag'ini**
+> günceller (`set image` / `patch cronjob`). Böylece RBAC beş kurala iner ve
+> origin-verify sırrı pipeline'a hiç girmez (madde 31 kapanır). Manifest *yapısı*
+> değişirse dağıtım elle apply edilir — pipeline **imaj** dağıtımının tek yoludur.
+> Ayrıntı ve tuzaklar: `docs/KARSILASILAN_ZORLUKLAR.md` madde 32–39.
+
+**Pipeline A — `mern.yml`** (tetik: `mern-project/**`, `docker/Dockerfile.{server,client}`, `docker/nginx/**`)
+1. Lint & unit test (client) — `CI=true npm run build` + `npm test --passWithNoTests`
 2. `docker compose up` → **Cypress e2e** (`endToEnd.spec.js`) → artifact olarak video/screenshot
-3. Image build (buildx + cache) → **Trivy taraması** → ECR push, tag = `git sha`
-4. `kustomize edit set image` → EKS'e deploy → `kubectl rollout status` (başarısızsa otomatik `rollout undo`)
-5. Deploy sonrası smoke test: `/healthcheck` ve `/api/record` 200 dönmeli
+3. Image build (buildx + gha cache) → **Trivy** → ECR push, tag = `git sha`
+   (yalnız `mern-server` + `mern-client`; ECR IMMUTABLE ön kontrolü ile re-run güvenli)
+4. `kubectl set image` → `rollout status` → **smoke** → başarısızsa otomatik `rollout undo`
+   — dördü de **tek job**, çünkü ayrı job'ın kubeconfig'i olmaz
+5. Smoke: `/` HTML, `/api/record` JSON, `/api/healthcheck/ready` → `.mongo == "up"`
+   (`/api/` öneki şart: öneksiz yol SPA fallback'ine düşüp sahte-yeşil verir)
 
-**Pipeline B — `etl.yml`** (tetik: `python-project/**`): lint (`ruff`) → build → Trivy → push → CronJob image güncelle.
+**Pipeline B — `etl.yml`** (tetik: `python-project/**`): `ruff` → build → Trivy → push →
+CronJob image patch → **doğrulama Job'ı** (`--from=cronjob/etl`, `wait --for=complete`) →
+başarısızsa önceki imaja geri patch. `mern-etl` tag'inin tek sahibi budur.
 
 **Kurallar**
 - AWS erişimi **OIDC ile federated role**; uzun ömürlü `AWS_ACCESS_KEY` secret'ı yok.
-- `main`'e doğrudan push kapalı; PR + yeşil CI zorunlu.
+  Repoda **hiç GitHub secret'ı yok** — yalnızca gizli olmayan repo *variables*.
+- `master`'a doğrudan push kapalı; PR + yeşil CI zorunlu.
 - Test aşaması atlanamaz; deploy yalnızca testler geçerse çalışır.
 - **Trivy ayarı:** `--severity HIGH,CRITICAL --ignore-unfixed --exit-code 1`.
-  `--ignore-unfixed` olmadan düzeltmesi olmayan CVE'ler `main`'i kalıcı kırmızıya çevirir.
+  `--ignore-unfixed` olmadan düzeltmesi olmayan CVE'ler `master`'ı kalıcı kırmızıya çevirir.
   Bu eşik Aşama 2'de lokal olarak kalibre edildi; imajlar hâlihazırda temiz geçiyor.
+- Tarama **push'tan önce** yapılır (`--load`, sonra `docker push`): taranmamış imaj
+  registry'ye hiç girmez.
+- Tüm action'lar **commit SHA ile pinlenir**; güncellemeleri Dependabot getirir.
+
+### Kurulum — repo variables (Settings → Secrets and variables → Actions → Variables)
+
+| Variable | Değer (kaynak) |
+|---|---|
+| `AWS_ROLE_ARN` | `terraform -chdir=terraform/envs/prod output -raw github_actions_role_arn` |
+| `ECR_REGISTRY` | `terraform … output -raw ecr_registry_url` |
+| `EKS_CLUSTER_NAME` | `terraform … output -raw cluster_name` |
+| `PUBLIC_URL` | `https://d3istqpjzc491u.cloudfront.net` (edge stack çıktısı) |
+
+Ayrıca: `prod` adlı GitHub Environment (deploy job'ları buna bağlı) ve
+`master` branch protection (PR zorunlu, `Lint & e2e` required check).
 
 ---
 

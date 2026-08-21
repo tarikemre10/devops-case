@@ -238,3 +238,47 @@ Cluster üzerinde (`mern-devops-case-prod`, 3 node):
 | HPA | `cpu: 1%/70%`, 2/6 replica — metrics-server metriği geliyor |
 | PDB | backend ve frontend: `ALLOWED DISRUPTIONS 1` |
 | CloudFront (edge) | `https://d3istqpjzc491u.cloudfront.net` — `/` 200, `/api/record` 200, POST 201, HTTP → **301** HTTPS |
+
+---
+
+## Aşama 5 — CI/CD (GitHub Actions)
+
+İki pipeline: `.github/workflows/mern.yml` (backend + frontend) ve
+`.github/workflows/etl.yml` (ETL). Erişim GitHub OIDC ile üstlenilen role dayanır;
+repoda tek bir GitHub **secret'ı yok** — yalnızca gizli olmayan `vars` var.
+
+### Temel tasarım kararı — CI tam `apply` yapmaz
+
+CI'a `kubectl apply -k` yaptırmak namespace içindeki 9 kaynak tipine
+`create/update/patch` yetkisi vermeyi ve `__ORIGIN_VERIFY__` sırrını pipeline'dan
+geçirmeyi gerektirirdi. Oysa pipeline'ın her koşuda değiştirdiği tek şey **imaj
+tag'i**. Bu yüzden CI yalnızca `kubectl set image` / `kubectl patch cronjob`
+çalıştırır. Sonuçlar:
+
+- RBAC beş kurala iner (aşağıda) — gerçek least-privilege.
+- Origin-verify sırrı CI'a hiç girmez; **madde 31 kapanır**.
+- **Sınır:** manifest *yapısı* değişirse (yeni kaynak, probe, resource değişikliği)
+  dağıtım elle `kubectl apply -k` ile yapılır. Pipeline **imaj** dağıtımının tek
+  yoludur. Bu, Çalışma Kuralı 6'ya bilinçli ve dar bir istisnadır.
+
+| # | Durum | Konu | Sorun | Çözüm |
+|---|---|---|---|---|
+| 32 | [x] | **IAM izni ≠ Kubernetes yetkisi** | OIDC rolünün `eks:DescribeCluster` izni vardı, yani `aws eks update-kubeconfig` sorunsuz çalışıyordu — ama `module "eks"` bloğunda hiç `access_entries` yoktu. Her `kubectl` çağrısı `Unauthorized` dönerdi. Kubeconfig'in üretilmesi bağlantının kurulduğu izlenimini verdiği için yanıltıcı bir hata | `access_entries` eklendi, `user_name = "github-actions"` ile sabitlendi. `policy_associations` **bilerek boş**: hazır `AmazonEKSClusterAdminPolicy` cluster geneli admin verirdi. Yetki `mern` namespace'ine bağlı `ci-deployer` Role'ünden gelir: `deployments` get/list/patch, `replicasets` get/list (rollout undo bunları okur), `cronjobs` get/list/patch, `jobs` +create/delete, `pods,pods/log,events` get/list. Secret, Service, Ingress, StatefulSet ve cluster-scope her şey **yok** |
+| 33 | [x] | **Terraform bağımlılık döngüsü** | `github_oidc` modülü `module.eks.cluster_arn`'i okuyor; access entry için `module.eks`'in `module.github_oidc.role_arn`'i okuması gerekti → `Cycle` hatası | Cluster ARN'i tamamen deterministik (bölge + hesap + ad). `locals.eks_cluster_arn` olarak elde kuruldu, bağımlılık tek yöne (`eks → github_oidc`) çevrildi |
+| 34 | [x] | **İki pipeline'ın tag sahipliği** | İlk tasarımda `mern.yml` deploy adımı üç imajı birden `$GITHUB_SHA` ile güncelliyordu. Ama o workflow yalnız `mern-server` ve `mern-client` üretiyor — `mern-etl:$SHA` hiç var olmuyor. CronJob var olmayan bir imaja işaret edip her saat başı `ImagePullBackOff`'a girerdi ve hata bir sonraki saate kadar fark edilmezdi | Her imajın **tek sahibi** var: `mern.yml` yalnız iki Deployment'ı, `etl.yml` yalnız CronJob'ı günceller. Doğrulama: merge sonrası CronJob'ın imaj tag'inin **değişmemiş** olması |
+| 35 | [x] | **Smoke testi sahte-yeşil** | Smoke `$PUBLIC_URL/healthcheck/ready` adresini deneyecekti. nginx yalnız `/api/` yolunu backend'e proxy'liyor; öneksiz yol SPA fallback'ine düşer ve **200 + HTML** döner. Yani backend tamamen ölü olsa bile smoke geçerdi | Doğru yol `/api/healthcheck/ready`. Ayrıca yalnız status koduna bakılmıyor: `Content-Type` doğrulanıyor ve gövde `jq -e '.mongo == "up"'` ile kontrol ediliyor |
+| 36 | [x] | **Smoke ayrı job olamaz** | Smoke ve rollback ayrı bir job'a konulmuştu. GitHub job'ları izole makinelerde çalışır: ayrı job'ın ne OIDC oturumu, ne kubeconfig'i, ne de önceki job'ın çalışma dizini olur — yani başarısızlıkta `kubectl rollout undo` **çalışamazdı** | Deploy + rollout + smoke + `if: failure()` rollback tek job, tek shell oturumu |
+| 37 | [x] | **ECR IMMUTABLE + workflow re-run** | Repolar `IMMUTABLE`. Bir workflow'u aynı commit için yeniden çalıştırmak (örn. geçici bir ağ hatası sonrası) push adımında `ImageTagAlreadyExistsException` ile patlar — düzeltilecek bir şey olmadığı hâlde pipeline kırmızı kalır | Push öncesi `aws ecr describe-images --image-ids imageTag=$SHA` kontrolü; imaj varsa build+push atlanır, deploy yine çalışır |
+| 38 | [x] | **CronJob'ın rollout geçmişi yok** | `Deployment`'ta `rollout undo` var, `CronJob`'ta yok. ETL imajı bozuksa geri dönecek bir revizyon bulunmaz ve her saat başı bozuk Job tetiklenmeye devam eder | `etl.yml` patch'ten **önce** mevcut imajı okuyup step output'una yazıyor; doğrulama job'ı başarısız olursa CronJob o değere geri patch'leniyor |
+| 39 | [x] | **`ruff` `runner.py`'de UP017** | Lint eklenince `datetime.now(timezone.utc)` `UP017` verdi. `ETL.py` **değiştirilemez** (Aşama 1 kuralı), ama `runner.py` bizim yazdığımız dosya | `runner.py` `datetime.UTC`'ye geçirildi (py3.12 imajı). `ETL.py` için `ruff.toml`'da `per-file-ignores` — stilistik kurallar kapalı, gerçek hata sınıfı `F` açık kalıyor |
+
+### Aşama 5 doğrulama kanıtları
+
+Statik (lokal): `actionlint` iki workflow'da da **0 bulgu** ·
+`ruff check` + `ruff format --check` temiz · `terraform fmt -recursive` temiz ·
+`terraform validate` (prod) başarılı.
+
+Cluster/pipeline üzerinde doğrulanacaklar: assume-role ile `kubectl -n mern get deploy`
+çalışır / `kubectl get nodes` ve `get secret` **Forbidden**; PR'da deploy job'ı skipped;
+merge'te ECR'de yeni SHA + rollout Complete + smoke JSON `mongo:"up"`;
+merge sonrası CronJob tag'i değişmemiş; `git grep ORIGIN_VERIFY` yalnız placeholder.

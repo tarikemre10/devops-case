@@ -10,8 +10,14 @@ resources:
 patches:
   - path: ingress-patch.yaml
 
-# Tag = commit SHA. Aşama 5'te CI şu komutla günceller:
-#   kustomize edit set image mern-server=<ecr>/mern-server:$GITHUB_SHA
+# Tag = commit SHA.
+#
+# DİKKAT: Aşağıdaki tag'ler bir BOOTSTRAP VARSAYILANIDIR — ilk elle apply'da
+# kullanılan değerlerdir, cluster'da o an çalışan tag DEĞİLDİR.
+# Aşama 5'ten sonra çalışan tag'i CI belirler (`kubectl set image` /
+# `kubectl patch cronjob`, bkz. .github/workflows/). Gerçek değer:
+#   kubectl -n mern get deploy,cronjob -o jsonpath='{..image}'
+#
 # Registry adresi: terraform -chdir=terraform/envs/prod output ecr_registry_url
 images:
   - name: mern-server

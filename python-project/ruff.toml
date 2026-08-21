@@ -1,0 +1,18 @@
+# ETL projesi için lint yapılandırması (Aşama 5 — etl.yml).
+#
+# ETL.py case gereği DEĞİŞTİRİLMEZ (Aşama 1 kuralı). Bu yüzden ona özgü
+# bulgular per-file-ignores ile susturulur; kural setinin kendisi gevşetilmez.
+
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "S"]
+
+[lint.per-file-ignores]
+# ETL.py dokunulmaz bir girdi dosyasıdır; stilistik bulguları pipeline'ı
+# kırmamalı. Sözdizimi/gerçek hata sınıfları (F, E9) yine de aktif kalır.
+"ETL.py" = ["E", "W", "I", "UP", "B", "S"]
+
+[format]
+exclude = ["ETL.py"]
