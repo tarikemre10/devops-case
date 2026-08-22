@@ -1,4 +1,4 @@
-# Uygulama imajları için ECR repoları.
+# Uygulama imajı repoları.
 
 terraform {
   required_version = ">= 1.10"
@@ -15,9 +15,7 @@ resource "aws_ecr_repository" "this" {
 
   name = "${var.project}/${each.value}"
 
-  # IMMUTABLE: imajlar commit SHA ile etiketleniyor, aynı tag'in üzerine
-  # yazılması bir hatadır. Bu ayar "deploy ettiğim imaj hâlâ aynı mı?"
-  # sorusunu anlamsız kılar.
+  # Commit SHA tag'lerinin üzerine yazılmasını engelle.
   image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
@@ -28,12 +26,11 @@ resource "aws_ecr_repository" "this" {
     encryption_type = "AES256"
   }
 
-  # Case teslimi sonrası `terraform destroy` içinde imaj kalmış repo yüzünden
-  # takılmasın diye. Gerçek prod'da false olurdu.
+  # Demo ortamının destroy işlemini kolaylaştırır.
   force_delete = var.force_delete
 }
 
-# Eski imajlar süresiz birikirse depolama ücreti sessizce büyür.
+# Eski imajları temizle.
 resource "aws_ecr_lifecycle_policy" "this" {
   for_each = aws_ecr_repository.this
 

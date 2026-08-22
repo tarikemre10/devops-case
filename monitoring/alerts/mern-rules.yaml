@@ -1,14 +1,4 @@
-# Aşama 6 — kritik olay alert kuralları.
-#
-# Bu dosya doğrudan kubectl ile apply EDİLMEZ: terraform/envs/prod/monitoring.tf
-# `yamldecode` ile okur ve kube-prometheus-stack'in `additionalPrometheusRulesMap`
-# değerine gömer. Böylece kural repoda okunabilir YAML olarak durur, ama
-# Terraform'un CRD'lerle plan-time şema sorunu yaşayan `kubernetes_manifest`
-# kaynağına ihtiyaç kalmaz.
-#
-# ÖN KOŞUL: values dosyasındaki `ruleSelectorNilUsesHelmValues: false`.
-# O bayrak olmadan Prometheus bu kuralları SESSİZCE yüklemez (doğrulama:
-# curl localhost:9090/api/v1/rules | jq '.data.groups[].name').
+# Terraform tarafından Prometheus chart values içine eklenir.
 
 groups:
   - name: mern-workloads
@@ -22,10 +12,7 @@ groups:
           summary: "{{ $labels.namespace }}/{{ $labels.pod }} sürekli yeniden başlıyor"
           description: "{{ $labels.container }} son 10 dakikada yeniden başladı."
 
-      # `sum(...) < 1` ve `absent(...)` BİRLİKTE gerekli: tüm backend pod'ları
-      # yok olursa (ImagePullBackOff, node kaybı) zaman serisi tamamen kaybolur
-      # ve `== 0` biçimindeki bir ifade hiç değerlendirilmez — alarm sessizce
-      # hiç ateşlenmez. Sessiz alarm, alarm olmamasından kötüdür.
+      # absent(), zaman serisi tamamen kaybolduğunda da alarm üretir.
       - alert: BackendNotReady
         expr: |
           sum(kube_pod_container_status_ready{namespace="mern",container="backend"}) < 1
@@ -37,11 +24,6 @@ groups:
           summary: "Backend'in hazır (ready) pod'u yok"
           description: "2 dakikadır readiness geçen backend pod'u bulunmuyor; API servis dışı."
 
-      # DİKKAT: container adı "frontend" DEĞİL "nginx"tir
-      # (k8s/base/frontend-deployment.yaml). İlk yazımda "frontend" yazılmıştı;
-      # kural cluster'da yanlış pozitif verdi ve hata böyle yakalandı —
-      # absent() olmasaydı metrik hiç doğmadığı için alarm sessizce hiç
-      # ateşlenmez ve eksiklik fark edilmezdi.
       - alert: FrontendNotReady
         expr: |
           sum(kube_pod_container_status_ready{namespace="mern",container="nginx"}) < 1
@@ -65,12 +47,7 @@ groups:
 
   - name: mern-etl
     rules:
-      # README kabul kriterinin ("ETL saatte 1 çalışmalı") tek gerçek doğrulaması.
-      # Bir web servisi çökerse kullanıcı fark eder; bir CronJob sessizce
-      # çalışmayı bırakırsa kimse fark etmez.
-      #
-      # absent(...) şart: CronJob HİÇ çalışmadıysa metrik hiç doğmaz ve
-      # zaman farkı ifadesi boş küme döner.
+      # Hiç koşmamış CronJob için absent() gerekir.
       - alert: ETLJobMissing
         expr: |
           (time() - kube_cronjob_status_last_successful_time{namespace="mern",cronjob="etl"} > 3900)

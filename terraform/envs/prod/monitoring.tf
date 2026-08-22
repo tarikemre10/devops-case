@@ -1,25 +1,10 @@
-# ---------------------------------------------------------------------------
-# Aşama 6 — Logging, Monitoring, Alerting
-# ---------------------------------------------------------------------------
-#
-# Yığın: kube-prometheus-stack (metrik + alert + Grafana) · Loki (log deposu) ·
-# Grafana Alloy (log toplayıcı). Üç chart da BU stack'te kurulur, ALB
-# Controller ile aynı desende (helm_release), böylece tek `terraform apply`
-# her şeyi ayağa kaldırır ve `destroy` temiz olur.
-#
-# Values dosyaları repo kökündeki monitoring/ klasöründedir; buraya gömülmez ki
-# `helm upgrade -f` ile elle debug edilebilsinler.
+# Logging, monitoring ve alerting
 
 locals {
   monitoring_namespace = "monitoring"
   monitoring_dir       = "${path.module}/../../../monitoring"
 
-  # Alert kuralları YAML olarak repoda durur; buradan chart'ın
-  # additionalPrometheusRulesMap değerine gömülür.
-  #
-  # kubernetes_manifest KULLANILMIYOR: PrometheusRule CRD'si aynı apply'da
-  # kuruluyor, o kaynak ise plan aşamasında CRD şemasını API'den okumak
-  # zorunda — CRD henüz yokken plan patlar.
+  # CRD plan bağımlılığını önlemek için kuralları chart values'a ekle.
   mern_alert_rules = yamldecode(file("${local.monitoring_dir}/alerts/mern-rules.yaml"))
 
   grafana_dashboards = fileset("${local.monitoring_dir}/dashboards", "*.json")
@@ -29,10 +14,7 @@ resource "kubernetes_namespace_v1" "monitoring" {
   metadata {
     name = local.monitoring_namespace
 
-    # DİKKAT: app namespace'inden farklı olarak burada
-    # pod-security.kubernetes.io/enforce=restricted YOKTUR.
-    # node-exporter hostPath + hostNetwork kullanır; `restricted` altında
-    # admission tarafından reddedilir ve DaemonSet hiç açılmaz.
+    # node-exporter hostPath kullanır.
     labels = {
       name = local.monitoring_namespace
     }
@@ -41,9 +23,7 @@ resource "kubernetes_namespace_v1" "monitoring" {
   depends_on = [module.eks]
 }
 
-# ---------------------------------------------------------------------------
 # Grafana admin parolası
-# ---------------------------------------------------------------------------
 
 resource "random_password" "grafana_admin" {
   length  = 24
@@ -64,9 +44,7 @@ resource "kubernetes_secret_v1" "grafana_admin" {
   type = "Opaque"
 }
 
-# ---------------------------------------------------------------------------
 # kube-prometheus-stack
-# ---------------------------------------------------------------------------
 
 resource "helm_release" "kube_prometheus_stack" {
   name       = "kube-prometheus-stack"
@@ -75,15 +53,14 @@ resource "helm_release" "kube_prometheus_stack" {
   version    = var.kube_prometheus_stack_version
   namespace  = kubernetes_namespace_v1.monitoring.metadata[0].name
 
-  # CRD kurulumu + operator + Prometheus StatefulSet'i birlikte 8-10 dakika
-  # sürebilir; varsayılan 300s bu chart için yetmez.
+  # CRD ve operator kurulumu varsayılan timeout'u aşabilir.
   timeout = 900
 
   values = concat(
     [
       file("${local.monitoring_dir}/kube-prometheus-stack.values.yaml"),
 
-      # Alert kuralları (monitoring/alerts/mern-rules.yaml).
+      # Prometheus alert kuralları.
       yamlencode({
         additionalPrometheusRulesMap = {
           mern = local.mern_alert_rules
@@ -91,9 +68,7 @@ resource "helm_release" "kube_prometheus_stack" {
       }),
     ],
 
-    # Slack webhook verilmediyse yığın "null" receiver ile çalışır (kanıt
-    # Alertmanager UI'daki firing listesi). Değişken doldurulursa bu ikinci
-    # doküman varsayılan alertmanager.config'in üzerine biner.
+    # Webhook varsa Slack receiver ayarını ekle.
     var.slack_webhook_url == "" ? [] : [
       templatefile("${local.monitoring_dir}/alertmanager-slack.values.yaml.tftpl", {
         slack_webhook_url = var.slack_webhook_url
@@ -108,9 +83,7 @@ resource "helm_release" "kube_prometheus_stack" {
   ]
 }
 
-# ---------------------------------------------------------------------------
 # Loki
-# ---------------------------------------------------------------------------
 
 resource "helm_release" "loki" {
   name       = "loki"
@@ -126,9 +99,7 @@ resource "helm_release" "loki" {
   depends_on = [kubernetes_storage_class_v1.gp3]
 }
 
-# ---------------------------------------------------------------------------
 # Grafana Alloy (log toplayıcı)
-# ---------------------------------------------------------------------------
 
 resource "helm_release" "alloy" {
   name       = "alloy"
@@ -139,19 +110,12 @@ resource "helm_release" "alloy" {
 
   values = [file("${local.monitoring_dir}/alloy.values.yaml")]
 
-  # Loki'nin Service'i hazır olmadan Alloy push'ları hata verir (kalıcı sorun
-  # değil ama gereksiz gürültü).
+  # Alloy'u Loki hazır olduktan sonra başlat.
   depends_on = [helm_release.loki]
 }
 
-# ---------------------------------------------------------------------------
 # Grafana dashboard'ları
-# ---------------------------------------------------------------------------
-#
-# Dashboard'lar çalışma anında grafana.com'dan İNDİRİLMEZ: dış kaynağa ve
-# değişen dashboard şemasına bağımlı olurdu. JSON'lar repoda durur, buradan
-# ConfigMap'e yazılır ve Grafana sidecar'ı `grafana_dashboard=1` label'ını
-# görüp otomatik yükler.
+# Sidecar, repodaki dashboard'ları etiketli ConfigMap'lerden yükler.
 
 resource "kubernetes_config_map_v1" "grafana_dashboards" {
   for_each = local.grafana_dashboards

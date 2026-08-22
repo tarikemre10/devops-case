@@ -1,6 +1,4 @@
-# ETL pipeline — lint, build, tara, ECR'ye push, CronJob imajını güncelle.
-#
-# `mern-etl` tag'inin TEK SAHİBİ bu workflow'dur; mern.yml bu kaynağa dokunmaz.
+# ETL build ve deploy pipeline'ı.
 
 name: etl
 
@@ -44,15 +42,12 @@ jobs:
       - name: ruff kurulumu
         run: pip install "ruff==0.14.2"
 
-      # ETL.py case gereği DEĞİŞTİRİLMEZ; ona özgü kural dışlamaları
-      # python-project/ruff.toml içinde per-file-ignores ile tanımlı.
       - name: ruff check
         run: ruff check python-project
 
       - name: ruff format
         run: ruff format --check python-project
 
-      # Sözdizimi doğrulaması: ruff'ın yakalamadığı derleme hataları için.
       - name: py_compile
         run: python -m compileall -q python-project
 
@@ -74,7 +69,7 @@ jobs:
 
       - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
 
-      # ECR IMMUTABLE: aynı commit için yeniden çalıştırma push'ta patlamasın.
+      # Immutable ECR tag'i varsa build'i atla.
       - name: Tag zaten var mı?
         id: exists
         run: |
@@ -136,8 +131,7 @@ jobs:
       - name: kubeconfig
         run: aws eks update-kubeconfig --name "${{ vars.EKS_CLUSTER_NAME }}" --region "${{ env.AWS_REGION }}"
 
-      # Geri alma için mevcut imaj saklanır: CronJob'ın Deployment gibi bir
-      # revizyon geçmişi yoktur, `rollout undo` çalışmaz.
+      # CronJob'ın rollout geçmişi olmadığı için mevcut imajı sakla.
       - name: Mevcut imajı kaydet
         id: current
         run: |
@@ -157,7 +151,6 @@ jobs:
           EOF
           )"
 
-      # Saat başını beklemeden yeni imajın gerçekten çalıştığı doğrulanır.
       - name: Doğrulama job'ı
         id: verify
         run: |
@@ -174,14 +167,10 @@ jobs:
           kubectl -n mern describe job "${{ steps.verify.outputs.job }}" || true
           kubectl -n mern logs "job/${{ steps.verify.outputs.job }}" --tail=100 || true
 
-      # Doğrulama job'ı, CronJob'ın kendi history limitlerine karışmasın diye
-      # başarılı da olsa başarısız da olsa silinir.
       - name: Doğrulama job'ını sil
         if: always()
         run: kubectl -n mern delete job "${{ steps.verify.outputs.job }}" --ignore-not-found
 
-      # Yeni imaj çalışmıyorsa CronJob eski imaja döndürülür; aksi hâlde her
-      # saat başı bozuk bir Job tetiklenmeye devam ederdi.
       - name: Geri al
         if: failure() && steps.current.outputs.image != ''
         run: |

@@ -1,13 +1,4 @@
-# nginx server bloğu — hem docker compose hem Kubernetes için TEK dosya.
-#
-# Ortam farkları iki env değişkeniyle kapatılır; imajın entrypoint'i
-# (/docker-entrypoint.d/20-envsubst-on-templates.sh) bu dosyayı
-# /etc/nginx/conf.d/default.conf olarak render eder.
-#
-#   NGINX_LOCAL_RESOLVERS : /etc/resolv.conf'tan otomatik doldurulur
-#                           (NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1 sayesinde)
-#                           compose -> 127.0.0.11, Kubernetes -> kube-dns ClusterIP
-#   BACKEND_UPSTREAM      : varsayılan backend:5050
+# Compose ve Kubernetes için ortak şablon; entrypoint envsubst ile render eder.
 
 server {
     listen 8080;
@@ -22,22 +13,11 @@ server {
 
     root /usr/share/nginx/html;
 
-    # Upstream'i istek anında çözebilmek için DNS resolver gerekir.
+    # Dinamik DNS çözümlemesi backend başlamadan nginx'in hata vermesini önler.
     resolver ${NGINX_LOCAL_RESOLVERS} valid=10s;
-
-    # DİKKAT: proxy_pass'te değişken kullanmak kasıtlıdır. Sabit bir host adı
-    # yazılırsa nginx upstream'i BAŞLANGIÇTA çözmeye çalışır; backend henüz
-    # ayakta değilken container hiç açılmaz ve CrashLoopBackOff'a girer.
-    # Değişken kullanıldığında çözümleme isteğe ertelenir.
     set $backend_upstream http://${BACKEND_UPSTREAM};
 
-    # /api önekini soymak için rewrite kullanılır: /api/record -> /record
-    #
-    # DİKKAT: proxy_pass DEĞİŞKEN içerdiğinde "sondaki slash öneki soyar"
-    # kuralı GEÇERSİZDİR. nginx bu durumda direktifte yazan URI'yi isteğin
-    # URI'siyle birleştirmez, onun YERİNE koyar — yani `proxy_pass $var/;`
-    # her isteği backend'e "/" olarak gönderir. Doğru yol, URI'yi rewrite ile
-    # değiştirip proxy_pass'i URI'siz bırakmaktır.
+    # Değişkenli proxy_pass öneki kaldırmadığı için /api rewrite edilir.
     location /api/ {
         rewrite ^/api/(.*)$ /$1 break;
         proxy_pass $backend_upstream;
@@ -52,19 +32,18 @@ server {
         proxy_read_timeout    30s;
     }
 
-    # İçerik hash'i taşıyan asset'ler uzun süre cache'lenebilir.
+    # Hash'li asset'ler uzun süre cache'lenebilir.
     location /static/ {
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
 
-    # index.html asla cache'lenmez, aksi halde yeni deploy kullanıcıya ulaşmaz.
+    # Yeni deploy'un hemen görünmesi için index.html cache'lenmez.
     location = /index.html {
         add_header Cache-Control "no-store, no-cache, must-revalidate";
     }
 
-    # SPA fallback: /records, /create, /edit/:id gibi client-side rotalar
-    # sunucuda dosya karşılığı olmadığı için index.html'e düşer.
+    # Client-side rotalar için SPA fallback.
     location / {
         try_files $uri $uri/ /index.html;
     }

@@ -1,6 +1,4 @@
-# CPU metriği metrics-server addon'ından gelir (Terraform'da kurulu).
-# Ayrıca control plane → node 10251 SG kuralı olmadan metrics-server
-# APIService FailedDiscoveryCheck verir ve HPA "unknown" metrikle takılır.
+# CPU metriği Terraform'un kurduğu metrics-server'dan gelir.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -18,9 +16,9 @@ spec:
         name: cpu
         target:
           type: Utilization
-          # requests (100m) üzerinden yüzde. %70 = 70m ortalama.
+          # CPU request değerinin yüzdesi.
           averageUtilization: 70
   behavior:
     scaleDown:
-      # Ani trafik dalgalanmasında sürekli açıp kapamayı (flapping) önler.
+      # Ani ölçek küçültmeyi önle.
       stabilizationWindowSeconds: 300

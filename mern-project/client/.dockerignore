@@ -1,10 +1,6 @@
-# Build context'i küçük tutar. node_modules tek başına ~473 MB ve imaj içinde
-# zaten `npm ci` ile yeniden kurulur — host'takini göndermek hem yavaş hem de
-# platform uyumsuzluğu riski taşır.
 node_modules
 build
 
-# Test artefaktları (cypress/included root olarak yazar)
 cypress/videos
 cypress/screenshots
 

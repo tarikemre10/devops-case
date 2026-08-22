@@ -1,7 +1,4 @@
-# Bucket terraform/bootstrap tarafından oluşturuldu.
-#
-# DynamoDB kilit tablosu YOK: Terraform 1.10+ ile gelen S3 native lockfile
-# (use_lockfile) aynı işi tek kaynakla görüyor.
+# Bucket bootstrap stack'inden gelir; kilitleme S3 lockfile kullanır.
 terraform {
   backend "s3" {
     bucket       = "mern-devops-case-tfstate-4673c1d7"

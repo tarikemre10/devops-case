@@ -1,12 +1,4 @@
-# CloudFront stack'i — ANA STACK'TEN VE AŞAMA 4'TEN SONRA uygulanır.
-#
-# Sıra:
-#   1. envs/prod apply        → VPC, EKS, ECR, IAM
-#   2. k8s manifestleri apply → Ingress, ALB Controller ALB'yi yaratır
-#   3. BURASI apply           → CloudFront, ALB'yi tag ile bulup önüne geçer
-#
-# 2. adım atlanırsa `data "aws_lb"` eşleşme bulamaz ve plan hata verir.
-# Bu kasıtlıdır: sessizce yanlış bir origin'e bağlanmaktansa açıkça durur.
+# Ingress ALB'yi oluşturduktan sonra uygulanan CloudFront stack'i.
 
 terraform {
   required_version = ">= 1.10"
@@ -40,7 +32,7 @@ provider "aws" {
   }
 }
 
-# Ana stack'in çıktıları okunur; cluster adı elle yazılmaz.
+# Ana stack çıktılarını kullan.
 data "terraform_remote_state" "prod" {
   backend = "s3"
 
@@ -51,11 +43,7 @@ data "terraform_remote_state" "prod" {
   }
 }
 
-# ALB'nin yalnızca CloudFront'tan istek kabul ettiğini doğrulamak için
-# paylaşılan gizli değer ANA STACK'TE üretilir ve buradan okunur.
-# Sebep: aynı değeri Ingress annotation'ı da (Aşama 4, edge'den ÖNCE apply
-# edilir) kullanmak zorunda. Burada üretilseydi ALB kuralı henüz var olmayan
-# bir değere bağlanacaktı.
+# Ingress ile paylaşılan origin doğrulama değerini ana stack'ten oku.
 module "edge" {
   source = "../../modules/edge"
 

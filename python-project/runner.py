@@ -1,14 +1,4 @@
-"""ETL.py için JSON log sarmalayıcısı.
-
-ETL.py case gereği DEĞİŞTİRİLMEZ. Bu sarmalayıcı onu çalıştırır, print()
-çıktısını yakalayıp yapılandırılmış JSON log satırlarına çevirir ve hata
-durumunda sıfırdan farklı bir çıkış kodu döndürür.
-
-Çıkış kodu kritik: CronJob'ın Job'u "Failed" işaretlemesi ve buna bağlı
-ETLJobMissing alert'inin tetiklenebilmesi buna dayanır.
-
-Kubernetes'te container entrypoint budur: `python runner.py`
-"""
+"""ETL.py çıktısını JSON olarak loglar ve çıkış kodunu CronJob'a iletir."""
 
 import contextlib
 import io
@@ -24,7 +14,7 @@ ETL_SCRIPT = os.environ.get("ETL_SCRIPT", os.path.join(os.path.dirname(__file__)
 
 
 def log(level, msg, **fields):
-    """Tek satır JSON log — Grafana Alloy stdout'tan bunu toplar."""
+    """Tek satır JSON log üretir."""
     record = {
         "ts": datetime.now(UTC).isoformat(),
         "level": level,

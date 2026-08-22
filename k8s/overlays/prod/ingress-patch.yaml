@@ -1,30 +1,21 @@
-# Origin doğrulaması: ALB yalnızca CloudFront'un eklediği X-Origin-Verify
-# header'ını taşıyan isteklere cevap verir, diğer her şeye 403 döner.
-# Header olmadan ALB'nin public DNS'i CloudFront'u (ve dolayısıyla TLS'i)
-# tamamen atlatmaya izin verirdi.
-#
-# __ORIGIN_VERIFY__ yer tutucusu git'te DÜZ METİN DEĞİLDİR; apply'dan önce
-# doldurulur:
-#   terraform -chdir=terraform/envs/prod output -raw origin_verify_secret
-# Aşama 5'te bunu CI adımı yapacak (docs/KARSILASILAN_ZORLUKLAR.md).
+# ALB yalnız CloudFront'un eklediği doğrulama başlığını kabul eder.
+# __ORIGIN_VERIFY__ apply sırasında Terraform output'u ile doldurulur.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: mern-ingress
   annotations:
-    # Header eşleşen istekler frontend'e gider.
+    # Doğrulanan istekleri frontend'e gönder.
     alb.ingress.kubernetes.io/conditions.frontend: |
       [{"field":"http-header","httpHeaderConfig":{"httpHeaderName":"X-Origin-Verify","values":["__ORIGIN_VERIFY__"]}}]
-    # Eşleşmeyen her şey için sabit cevap. Hedefe hiç ulaşmaz.
+    # Diğer istekleri hedefe ulaşmadan reddet.
     alb.ingress.kubernetes.io/actions.deny-direct: |
       {"type":"fixed-response","fixedResponseConfig":{"contentType":"text/plain","statusCode":"403","messageBody":"Direct access denied"}}
 spec:
   rules:
     - http:
         paths:
-          # SIRA ÖNEMLİ: ALB listener kuralları buradaki sırayla üretilir.
-          # deny-direct önce gelirse koşullu kural hiç değerlendirilmez ve
-          # CloudFront dahil her istek 403 alır.
+          # Listener kural sırası korunmalıdır.
           - path: /
             pathType: Prefix
             backend:

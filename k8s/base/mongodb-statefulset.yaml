@@ -7,9 +7,7 @@ metadata:
     app.kubernetes.io/component: database
 spec:
   serviceName: mongodb
-  # Tek replica bilinçli bir tercih (MIMARI.md §3.3): 3 node'lu ReplicaSet +
-  # seçim mekanizması bu demonun kapsamını gereksiz büyütür. Prod yolu
-  # mongodb-community-operator'dür.
+  # Demo ortamında tek replica kullanılır.
   replicas: 1
   selector:
     matchLabels:
@@ -19,9 +17,7 @@ spec:
       labels:
         app.kubernetes.io/name: mongodb
     spec:
-      # mongo imajındaki `mongodb` kullanıcısı uid/gid 999.
-      # fsGroup olmadan PVC root sahipli mount edilir ve mongod
-      # "Permission denied" ile açılmaz.
+      # MongoDB imajının uid/gid değeri.
       securityContext:
         runAsNonRoot: true
         runAsUser: 999
@@ -52,8 +48,7 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-          # İlk açılışta init scriptleri + WiredTiger dosyalarının
-          # yaratılması yavaş olabilir; startupProbe liveness'ı korur.
+          # İlk kurulum liveness süresini aşabilir.
           startupProbe:
             exec:
               command:
@@ -76,8 +71,7 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data/db
-            # readOnlyRootFilesystem altında yazılabilir olması gereken yollar.
-            # /data/configdb'yi mongod açılışta oluşturmaya çalışır.
+            # MongoDB'nin yazılabilir çalışma dizinleri.
             - name: configdb
               mountPath: /data/configdb
             - name: tmp
@@ -92,9 +86,7 @@ spec:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
-        # gp3 Terraform'da default StorageClass olarak tanımlı; yine de
-        # açıkça yazılıyor ki default değişirse manifest sessizce gp2'ye
-        # düşmesin.
+        # Varsayılan StorageClass değişse de gp3 kullan.
         storageClassName: gp3
         resources:
           requests:

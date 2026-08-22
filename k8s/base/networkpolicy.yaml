@@ -1,8 +1,4 @@
-# Default-deny + yalnızca gerekli yollar (MIMARI.md §4).
-#
-# ÖN KOŞUL: VPC CNI addon'ında `enableNetworkPolicy = "true"` olmalı
-# (terraform/envs/prod/main.tf). Kapalıyken bu kaynaklar sorunsuz apply olur,
-# `kubectl get netpol` hepsini listeler ama HİÇBİR trafiği engellemez.
+# Default-deny ve gerekli servis trafiği.
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -12,8 +8,7 @@ spec:
   podSelector: {} # namespace'teki tüm pod'lar
   policyTypes: [Ingress, Egress]
 ---
-# DNS herkese açık olmalı: kapalıyken Service adları çözülmez ve hata
-# "connection refused" değil, teşhisi zor bir timeout olarak görünür.
+# DNS erişimi.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -35,8 +30,7 @@ spec:
         - protocol: TCP
           port: 53
 ---
-# ALB → frontend. ALB target-type: ip modunda pod'a node/ENI üzerinden
-# gelir; kaynak IP VPC içindedir, bu yüzden podSelector değil ipBlock.
+# ALB → frontend.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -89,8 +83,6 @@ spec:
       ports:
         - protocol: TCP
           port: 5050
-    # ALB'nin health check'i backend'e gitmiyor (hedef yalnızca frontend),
-    # ama kubelet probe'ları node'dan gelir ve NetworkPolicy kapsamı dışındadır.
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -128,9 +120,7 @@ spec:
         - protocol: TCP
           port: 27017
 ---
-# ETL yalnızca internete 443 açar (api.github.com). VPC CIDR'ı `except` ile
-# dışlamak, ETL container'ının cluster içi servislere yanlışlıkla ulaşmasını
-# engeller — 0.0.0.0/0 tek başına iç ağı da kapsar.
+# ETL yalnız internete HTTPS ile çıkar; VPC erişimi kapalıdır.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -150,8 +140,7 @@ spec:
         - protocol: TCP
           port: 443
 ---
-# Aşama 6 hazırlığı: Prometheus/Alloy monitoring namespace'inden scrape eder.
-# Şimdiden açılıyor ki monitoring kurulunca netpol hata ayıklaması gerekmesin.
+# Monitoring erişimi.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

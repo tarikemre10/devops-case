@@ -13,8 +13,7 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      # maxUnavailable: 0 → deploy sırasında kapasite hiç düşmez;
-      # yeni pod Ready olmadan eskisi kapatılmaz.
+      # Yeni pod hazır olmadan eski pod'u kapatma.
       maxUnavailable: 0
       maxSurge: 1
   template:
@@ -28,12 +27,8 @@ spec:
         runAsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
-      # server.mjs SIGTERM'de bağlantıları düzgün kapatıyor (Aşama 1),
-      # tini PID 1 olduğu için sinyal gerçekten iletiliyor.
       terminationGracePeriodSeconds: 30
 
-      # Gerekçe frontend-deployment.yaml'daki ile aynı: HPA 2→6 ölçekliyor,
-      # node 3 tane — katı kural ölçeklemeyi kilitlerdi.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -44,10 +39,7 @@ spec:
 
       containers:
         - name: backend
-          # server.mjs SIGTERM'i alır almaz yeni bağlantı kabul etmeyi bırakır.
-          # Endpoint'in kube-proxy/nginx tarafına yayılması ise birkaç yüz ms
-          # sürer; bu boşlukta gelen istek "connection refused" alır.
-          # preStop kapanışı 5 saniye geciktirerek yayılmayı bekletir.
+          # Endpoint güncellemesinin yayılmasını bekle.
           lifecycle:
             preStop:
               exec:
@@ -60,7 +52,6 @@ spec:
             - configMapRef:
                 name: app-config
           env:
-            # Hazır bağlantı dizesi; parola manifestlerde hiç geçmez.
             - name: ATLAS_URI
               valueFrom:
                 secretKeyRef:
@@ -78,25 +69,18 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-          # Mongo hazır olana kadar conn.mjs üstel backoff'la yeniden dener;
-          # startupProbe bu süre boyunca liveness'ın pod'u öldürmesini engeller.
           startupProbe:
             httpGet:
               path: /healthcheck
               port: http
             periodSeconds: 5
             failureThreshold: 30
-          # Liveness SADECE process canlılığına bakar. Mongo'ya bakarsa
-          # veritabanı kısa süre düştüğünde tüm backend pod'ları restart
-          # döngüsüne girer ve kendini toparlayamaz.
           livenessProbe:
             httpGet:
               path: /healthcheck
               port: http
             periodSeconds: 15
             failureThreshold: 3
-          # Readiness Mongo ping içerir; bağlantı yoksa 503 → pod Service'ten
-          # düşer ama öldürülmez.
           readinessProbe:
             httpGet:
               path: /healthcheck/ready

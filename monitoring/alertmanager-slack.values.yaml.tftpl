@@ -1,9 +1,4 @@
-# Yalnızca var.slack_webhook_url DOLU olduğunda ikinci values dokümanı olarak
-# yüklenir (terraform/envs/prod/monitoring.tf). Helm sonraki values'ı öncekinin
-# üzerine bindirir, böylece "null" receiver'lı varsayılan yapılandırma
-# slack-notifications ile değiştirilmiş olur.
-#
-# Webhook URL'i git'e girmez: değer tfvars/TF_VAR ile verilir.
+# Webhook varsa varsayılan null receiver'ın üzerine uygulanır.
 alertmanager:
   config:
     global:
@@ -15,8 +10,7 @@ alertmanager:
       repeat_interval: 4h
       receiver: "slack-notifications"
       routes:
-        # Watchdog sürekli ateşler (Prometheus'un kendi canlılık sinyalidir);
-        # Slack'e gitmesi kanalı kullanılamaz hale getirir.
+        # Sürekli çalışan Watchdog alarmını Slack'e gönderme.
         - matchers: ['alertname = "Watchdog"']
           receiver: "null"
     receivers:

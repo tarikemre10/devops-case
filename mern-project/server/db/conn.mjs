@@ -5,16 +5,11 @@ const connectionString = process.env.ATLAS_URI || "mongodb://localhost:27017";
 const dbName = process.env.MONGO_DB || "sample_training";
 const maxRetries = Number(process.env.MONGO_MAX_RETRIES || 10);
 
-// serverSelectionTimeoutMS varsayılanı 30sn; readiness probe'unu bu kadar
-// bekletmemek için 5sn'ye çekiliyor.
 const client = new MongoClient(connectionString, {
   serverSelectionTimeoutMS: 5000,
 });
 
-// Kubernetes'te MongoDB pod'u backend'den sonra hazır olabilir. Bağlantı
-// hatasında süreci sessizce bozuk bırakmak yerine üstel backoff ile yeniden
-// denenir; denemeler tükenirse process.exit(1) ile çıkılır ve restart
-// sorumluluğu Kubernetes'e bırakılır.
+// MongoDB backend'den sonra hazır olabilir.
 async function connectWithRetry() {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
