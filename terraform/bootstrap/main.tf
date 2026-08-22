@@ -1,23 +1,10 @@
-# Remote state altyapısı — tavuk-yumurta sorununun çözümü.
-#
-# Bu stack YEREL state ile bir kez uygulanır; ürettiği S3 bucket'ı ana stack'in
-# (envs/prod) backend'i olur. Kendi state'i git'e girmez.
-#
-#   terraform init && terraform apply
-#
-# NOT: DynamoDB kilit tablosu YOK. Terraform 1.10+ ile gelen S3 native lockfile
-# (`use_lockfile = true`) aynı işi görüyor — bir kaynak, bir maliyet kalemi ve
-# bir hata yüzeyi eksik.
+# Ana stack'in S3 state backend'ini oluşturur.
 
 terraform {
   required_version = ">= 1.10"
 
   required_providers {
-    # Bu stack bilinçli olarak AWS provider 6.x kullanır; ana stack (envs/prod)
-    # 5.x'te kalır. Sebep: terraform-aws-modules/eks v20 henüz provider 6'yı
-    # desteklemiyor (`< 6.0.0` kısıtı). Bootstrap yalnızca S3 kaynakları
-    # yönettiği ve tamamen ayrı bir state'e sahip olduğu için bu ayrışma
-    # sorun değil; ana stack EKS modülü v21'e geçtiğinde ikisi hizalanır.
+    # EKS modülünden bağımsız olduğu için provider 6.x kullanabilir.
     aws = {
       source  = "hashicorp/aws"
       version = "~> 6.0"
@@ -42,7 +29,7 @@ provider "aws" {
   }
 }
 
-# Bucket adları global olarak benzersiz olmalı.
+# Global benzersiz bucket eki.
 resource "random_id" "suffix" {
   byte_length = 4
 }
@@ -54,12 +41,11 @@ locals {
 resource "aws_s3_bucket" "state" {
   bucket = local.bucket_name
 
-  # State bucket'ı kazara silinmemeli. Teslim sonrası temizlik için önce
-  # ana stack destroy edilir, sonra bu değer true yapılıp bucket silinir.
+  # State bucket'ını kazara silmeye karşı koru.
   force_destroy = false
 }
 
-# Yanlış bir apply'dan sonra state'i geri alabilmenin tek yolu versioning.
+# State geri dönüşü için versioning.
 resource "aws_s3_bucket_versioning" "state" {
   bucket = aws_s3_bucket.state.id
 
@@ -78,7 +64,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
   }
 }
 
-# State dosyası düz metin secret içerebilir; herkese açık olması felaket olur.
+# Tüm public erişimi engelle.
 resource "aws_s3_bucket_public_access_block" "state" {
   bucket = aws_s3_bucket.state.id
 
@@ -88,7 +74,7 @@ resource "aws_s3_bucket_public_access_block" "state" {
   restrict_public_buckets = true
 }
 
-# Eski state sürümleri sonsuza kadar birikmesin.
+# Eski state sürümlerini temizle.
 resource "aws_s3_bucket_lifecycle_configuration" "state" {
   bucket = aws_s3_bucket.state.id
 

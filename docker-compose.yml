@@ -1,15 +1,4 @@
-# Lokal uçtan uca doğrulama yığını.
-#
-#   docker compose up --build -d          tüm sistemi ayağa kaldırır
-#   docker compose --profile test run --rm cypress    e2e testleri koşar
-#   docker compose --profile etl run --rm etl         ETL job'ını bir kez çalıştırır
-#
-# Üretim dağıtım yolu Kubernetes'tir (k8s/). Bu dosya geliştirme ve CI'daki
-# e2e adımı içindir.
-#
-# GÜVENLİK NOTU: buradaki MongoDB kimlik bilgileri yalnızca lokal geliştirme
-# içindir ve buluta asla gitmez. Kubernetes'te parola Terraform'un ürettiği
-# random_password ile Secret'tan gelir.
+# Lokal geliştirme ve e2e ortamı.
 
 name: mern-devops-case
 
@@ -37,15 +26,11 @@ services:
       dockerfile: ../../docker/Dockerfile.server
     restart: unless-stopped
     environment:
-      # authSource=admin: kullanıcı admin veritabanında tanımlı.
       ATLAS_URI: mongodb://${MONGO_USER:-root}:${MONGO_PASSWORD:-devpassword}@mongo:27017/${MONGO_DB:-sample_training}?authSource=admin
       MONGO_DB: ${MONGO_DB:-sample_training}
       NODE_ENV: production
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      # CORS kapalı: frontend ile aynı origin üzerinden (nginx proxy) konuşulur.
     ports:
-      # Yalnızca hata ayıklama kolaylığı ve sadece loopback'e bağlı.
-      # Kubernetes'te backend Service'i ClusterIP'tir, cluster dışına açılmaz.
       - "127.0.0.1:${BACKEND_PORT:-5050}:5050"
     depends_on:
       mongo:
@@ -57,8 +42,6 @@ services:
       context: ./mern-project/client
       dockerfile: ../../docker/Dockerfile.client
       additional_contexts:
-        # nginx template'i uygulama context'inin dışında tutulur; aynı dosya
-        # Aşama 4'te Kubernetes ConfigMap'ine kaynak olacak.
         nginxconf: ./docker/nginx
     restart: unless-stopped
     environment:
@@ -71,18 +54,11 @@ services:
         condition: service_healthy
     networks: [mern]
 
-  # --- yalnızca profille çalışan servisler ---------------------------------
-
   cypress:
-    # cypress/included:4.12.1
-    # Sürüm sabit: repo Cypress 4.x düzenini (cypress.json + integration/)
-    # kullanıyor, 10+ imajları bu testleri bulamaz. Ayrıca Cypress 4.x host
-    # makinede (Ubuntu 24.04) hiç başlamıyor, bu yüzden testler konteynerde
-    # koşar.
+    # Eski Cypress dizin yapısıyla uyumlu sürüm.
     image: cypress/included@sha256:9c8399bb8dff44733269bdc543e0b92204ca028105ac653f24554b1c02562483
     profiles: [test]
     environment:
-      # Testler üretim artefaktına karşı koşar: CRA dev server değil, nginx.
       CYPRESS_baseUrl: http://frontend:8080
     working_dir: /e2e
     volumes:
@@ -97,7 +73,6 @@ services:
       context: ./python-project
       dockerfile: ../docker/Dockerfile.etl
     profiles: [etl]
-    # Kubernetes'te CronJob "0 * * * *" ile çalışır; burada elle tetiklenir.
     restart: "no"
     networks: [mern]
 

@@ -1,15 +1,4 @@
-# ETL job — Kubernetes'te CronJob olarak saatte bir çalışır.
-#
-# Build context: python-project
-#   docker build -f docker/Dockerfile.etl -t mern-etl python-project
-
-# python:3.12-alpine
-#
-# slim (Debian) yerine alpine seçildi: slim tabanlı imaj Trivy'de 36 adet
-# düzeltilebilir HIGH bulgu veriyordu ve bunların tamamı util-linux/login/mount
-# ailesinden geliyordu — bir batch job'ın hiç ihtiyaç duymadığı paketler.
-# Tek bağımlılığımız `requests` saf Python olduğu için alpine'da derleme
-# gerekmiyor; imaj da 122 MB'tan belirgin şekilde küçülüyor.
+# Hourly ETL image
 FROM python@sha256:d09d15e60962ca365d1cd544a48773bac9d33f2fb1b00f2aa0deec78ade7dc31
 
 ENV PYTHONUNBUFFERED=1 \
@@ -18,22 +7,12 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apk upgrade --no-cache
 
 WORKDIR /app
-
-# Bağımlılıklar önce: kaynak kod değiştiğinde pip install cache'ten gelir.
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-
 COPY . .
 
-# Hazır non-root kullanıcı yok, oluşturuluyor (alpine'da adduser/BusyBox).
 RUN adduser -D -u 10001 etl && chown -R etl:etl /app
 USER etl
 
-# HEALTHCHECK bilinçli olarak yok: bu sürekli çalışan bir servis değil, tek
-# seferlik bir batch iş. Sağlığı çıkış koduyla ölçülür — runner.py hata
-# durumunda exit 1 döner, Kubernetes Job'ı Failed işaretler ve ETLJobMissing
-# alert'i tetiklenir.
-
-# runner.py ETL.py'yi çalıştırır ve çıktısını JSON log'a çevirir.
-# ETL.py'nin kendisi case gereği değiştirilmemiştir.
+# Batch health is reported by the process exit code.
 ENTRYPOINT ["python", "runner.py"]

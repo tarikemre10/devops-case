@@ -1,21 +1,11 @@
-# Grafana Alloy — log toplayıcı (Promtail 2 Mart 2026'da EOL oldu, ADR 6).
-#
-# DİKKAT — DaemonSet DEĞİL, tek replica Deployment:
-# `loki.source.kubernetes` log'ları hostPath'ten değil Kubernetes API'sinden
-# okur. DaemonSet olarak çalıştırılırsa her node'daki instance TÜM eşleşen
-# pod'ları toplar ve aynı satır Loki'ye node sayısı kadar yazılır. Bunu
-# önlemenin yolu ya Alloy clustering/sharding ya da tek instance'tır; bu
-# ölçekte ikincisi doğru karardır (2 pod slotu da tasarruf edilir).
-#
-# Bilinen sınır: Alloy pod'u yeniden başlarken kısa bir log boşluğu oluşur.
-# Prod yolu (clustering ya da DaemonSet + loki.source.file) README'de not edilir.
+# Kubernetes loglarını toplayan Alloy.
 
 controller:
   type: deployment
   replicas: 1
 
 alloy:
-  # Metrik toplama Prometheus'un işi; Alloy yalnızca log taşır.
+  # Alloy yalnızca log taşır.
   clustering:
     enabled: false
 
@@ -29,8 +19,7 @@ alloy:
   configMap:
     create: true
     content: |-
-      // Yalnızca uygulama ve monitoring namespace'leri. kube-system gürültüsü
-      // Loki'yi şişirir ve 10Gi'lık PVC'yi hızla doldurur.
+      // Yalnız uygulama ve monitoring loglarını tut.
       discovery.kubernetes "pods" {
         role = "pod"
 
@@ -42,8 +31,7 @@ alloy:
       discovery.relabel "pod_logs" {
         targets = discovery.kubernetes.pods.targets
 
-        // Alloy ve Loki kendi loglarını da üretir; onları geri yazmak sonsuz
-        // hacim büyümesi yaratır. Hedef daha kaynağında elenir.
+        // Alloy ve Loki loglarını geri besleme döngüsünden çıkar.
         rule {
           source_labels = ["__meta_kubernetes_pod_container_name"]
           regex         = "alloy|loki"
@@ -65,14 +53,13 @@ alloy:
           target_label  = "container"
         }
 
-        // Uygulama adı (app.kubernetes.io/name) Grafana'da tek filtre olarak
-        // kullanılıyor: {app="backend"} gibi sorgular bu label'a dayanır.
+        // Kubernetes uygulama etiketini Loki'ye aktar.
         rule {
           source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
           target_label  = "app"
         }
 
-        // ETL Job'larının pod adı her koşuda değişir; job_name sabit kalır.
+        // ETL koşularını sabit job_name ile grupla.
         rule {
           source_labels = ["__meta_kubernetes_pod_label_job_name"]
           target_label  = "job_name"

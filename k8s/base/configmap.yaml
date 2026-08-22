@@ -1,11 +1,9 @@
-# Gizli olmayan tüm uygulama ayarları. Parolalar burada DEĞİL,
-# Terraform'un ürettiği `mongo-credentials` Secret'ındadır (ADR 10).
+# Parolalar mongo-credentials Secret'ında tutulur.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: app-config
 data:
-  # --- backend ---
   MONGO_DB: sample_training # terraform var.mongo_database ile aynı olmalı
   PORT: "5050"
   HOST: 0.0.0.0 # 127.0.0.1'e bind ederse readiness probe'u bile ulaşamaz
@@ -13,7 +11,4 @@ data:
   LOG_LEVEL: info
   CORS_ORIGINS: "" # boş = same-origin; nginx zaten /api'yi proxy'liyor
 
-  # --- frontend (nginx template'i envsubst ile bunu okur) ---
-  # NGINX_LOCAL_RESOLVERS verilmez: imajın 15-local-resolvers.envsh scripti
-  # /etc/resolv.conf'tan kube-dns ClusterIP'sini kendisi doldurur.
   BACKEND_UPSTREAM: backend.mern.svc.cluster.local:5050

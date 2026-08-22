@@ -1,5 +1,5 @@
 terraform {
-  # 1.10 zorunlu: S3 native state locking (use_lockfile) bu sürümle geldi.
+  # S3 native state locking için Terraform 1.10+ gerekir.
   required_version = ">= 1.10"
 
   required_providers {
@@ -38,9 +38,7 @@ provider "aws" {
   }
 }
 
-# Kubernetes ve Helm provider'ları cluster'a exec plugin ile bağlanır.
-# Statik token KULLANILMAZ: token 15 dakikada dolar ve state'e yazılırsa
-# sonraki apply'lar "Unauthorized" ile düşer.
+# Kubernetes ve Helm kısa ömürlü exec token'ı kullanır.
 provider "kubernetes" {
   host                   = module.eks.cluster_endpoint
   cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)

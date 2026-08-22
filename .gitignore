@@ -1,4 +1,3 @@
-# --- Terraform ---
 **/.terraform/*
 *.tfstate
 *.tfstate.*
@@ -6,7 +5,6 @@
 tfplan
 crash.log
 crash.*.log
-# tfvars sır içerebilir; örnek dosya (*.tfvars.example) commit'lenir
 *.tfvars
 !*.tfvars.example
 override.tf
@@ -17,26 +15,20 @@ override.tf.json
 terraform.rc
 .terraform.lock.hcl.bak
 
-# --- Kubernetes ---
 kubeconfig
 kubeconfig.*
 *.kubeconfig
 
-# --- Ortam / sırlar ---
 .env
 config.env
 
-# --- Sistem ---
 .DS_Store
 
-# --- Build artefaktları ---
 node_modules/
 mern-project/client/build/
 
-# --- Test çıktıları ---
 mern-project/client/cypress/videos/
 mern-project/client/cypress/screenshots/
 
-# --- Python ---
 __pycache__/
 *.pyc

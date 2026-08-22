@@ -1,6 +1,5 @@
 node_modules
 
-# Lokal ortam dosyası — sırlar imaja gömülmemeli, konfigürasyon env'den gelir.
 config.env
 .env
 

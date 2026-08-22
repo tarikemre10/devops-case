@@ -1,36 +1,24 @@
-# AWS Load Balancer Controller bu kaynağı görüp bir ALB üretir.
-#
-# İSİM DEĞİŞTİRİLEMEZ: edge stack ALB'yi
-# `elbv2.k8s.aws/cluster` + `ingress.k8s.aws/stack = mern/mern-ingress`
-# tag'iyle arıyor (terraform/envs/edge/variables.tf). Namespace veya ad
-# değişirse CloudFront origin'i bulamaz ve edge apply'ı hata verir.
+# Edge stack ALB'yi Ingress adı ve namespace etiketiyle bulur.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: mern-ingress
   annotations:
     alb.ingress.kubernetes.io/scheme: internet-facing
-    # ip: ALB doğrudan pod IP'lerine gider (instance mode'daki NodePort
-    # sıçraması olmaz), böylece readiness gate ve rolling update düzgün çalışır.
     alb.ingress.kubernetes.io/target-type: ip
-    # Yalnızca HTTP:80. TLS CloudFront katmanında sonlanır; kayıtlı alan
-    # adı olmadığı için ALB'ye ACM sertifikası bağlanamıyor (ADR / zorluk G).
+    # TLS CloudFront'ta sonlanır.
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
     alb.ingress.kubernetes.io/healthcheck-path: /
     alb.ingress.kubernetes.io/healthcheck-port: traffic-port
     alb.ingress.kubernetes.io/success-codes: "200"
     alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=60
-    # Varsayılan 300 sn'dir: silinen bir pod'un hedef kaydı 5 dakika "draining"
-    # kalır ve rollout'lar gereksiz uzar. 30 sn, pod'un preStop'ta beklediği
-    # 15 sn ile birlikte devam eden isteklerin bitmesine fazlasıyla yeter.
     alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
 spec:
   ingressClassName: alb
   rules:
     - http:
         paths:
-          # Tek hedef: nginx. /api/ yolunu ALB değil nginx proxy'liyor
-          # (rewrite + değişkenli proxy_pass, docker/nginx/default.conf.template).
+          # /api dahil tüm yolları nginx karşılar.
           - path: /
             pathType: Prefix
             backend:

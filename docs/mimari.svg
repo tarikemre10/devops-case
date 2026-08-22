@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 560" width="1000" height="560" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#57606a"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+    </marker>
+    <marker id="arrowDash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8250df"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1000" height="560" fill="#ffffff"/>
+
+  <!-- ============ Paneller ============ -->
+  <rect x="150" y="60" width="300" height="120" rx="8" fill="#fdf6e3" stroke="#d4a72c" stroke-width="1.5"/>
+  <text x="164" y="82" font-size="13" font-weight="600" fill="#7d4e00">AWS Edge</text>
+
+  <rect x="30" y="220" width="940" height="300" rx="8" fill="#f6f8fa" stroke="#afb8c1" stroke-width="1.5"/>
+  <text x="46" y="242" font-size="13" font-weight="600" fill="#57606a">Amazon EKS</text>
+
+  <rect x="46" y="252" width="720" height="90" rx="6" fill="#eef6ff" stroke="#54aeff" stroke-width="1.5"/>
+  <text x="58" y="271" font-size="12" font-weight="600" fill="#0a3069">namespace: mern</text>
+
+  <rect x="46" y="390" width="908" height="110" rx="6" fill="#f5f0ff" stroke="#c297ff" stroke-width="1.5"/>
+  <text x="58" y="409" font-size="12" font-weight="600" fill="#4c2889">namespace: monitoring</text>
+
+  <!-- ============ Edge ============ -->
+  <rect x="20" y="95" width="110" height="50" rx="25" fill="#ffffff" stroke="#57606a" stroke-width="1.5"/>
+  <text x="75" y="125" font-size="13" fill="#1f2328" text-anchor="middle">Kullanıcı</text>
+
+  <rect x="168" y="95" width="120" height="50" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="1.5"/>
+  <text x="228" y="117" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">CloudFront</text>
+  <text x="228" y="133" font-size="10" fill="#57606a" text-anchor="middle">TLS sonlandırma</text>
+
+  <rect x="318" y="95" width="120" height="50" rx="6" fill="#ffffff" stroke="#57606a" stroke-width="1.5"/>
+  <text x="378" y="117" font-size="13" font-weight="600" fill="#1f2328" text-anchor="middle">ALB</text>
+  <text x="378" y="133" font-size="10" fill="#57606a" text-anchor="middle">header doğrulama</text>
+
+  <rect x="810" y="95" width="140" height="50" rx="6" fill="#ffffff" stroke="#1a7f37" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="880" y="117" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle">GitHub API</text>
+  <text x="880" y="133" font-size="10" fill="#57606a" text-anchor="middle">harici servis</text>
+
+  <!-- ============ Uygulama ============ -->
+  <rect x="62" y="284" width="140" height="46" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="1.5"/>
+  <text x="132" y="303" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle">Frontend · nginx</text>
+  <text x="132" y="319" font-size="10" fill="#57606a" text-anchor="middle">×2</text>
+
+  <rect x="238" y="284" width="140" height="46" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="1.5"/>
+  <text x="308" y="303" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle">Backend · Express</text>
+  <text x="308" y="319" font-size="10" fill="#57606a" text-anchor="middle">×2 · HPA 2→6</text>
+
+  <rect x="414" y="284" width="118" height="46" rx="6" fill="#ffffff" stroke="#0969da" stroke-width="1.5"/>
+  <text x="473" y="303" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle">MongoDB</text>
+  <text x="473" y="319" font-size="10" fill="#57606a" text-anchor="middle">gp3 PVC</text>
+
+  <rect x="600" y="284" width="140" height="46" rx="6" fill="#ffffff" stroke="#1a7f37" stroke-width="1.5"/>
+  <text x="670" y="303" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle">ETL CronJob</text>
+  <text x="670" y="319" font-size="10" fill="#57606a" text-anchor="middle">saatte bir</text>
+
+  <!-- ============ Monitoring ============ -->
+  <rect x="70" y="422" width="110" height="44" rx="6" fill="#ffffff" stroke="#8250df" stroke-width="1.5"/>
+  <text x="125" y="448" font-size="12" fill="#1f2328" text-anchor="middle">Alloy</text>
+
+  <rect x="216" y="422" width="110" height="44" rx="6" fill="#ffffff" stroke="#8250df" stroke-width="1.5"/>
+  <text x="271" y="448" font-size="12" fill="#1f2328" text-anchor="middle">Loki</text>
+
+  <rect x="362" y="422" width="120" height="44" rx="6" fill="#ffffff" stroke="#8250df" stroke-width="1.5"/>
+  <text x="422" y="448" font-size="12" fill="#1f2328" text-anchor="middle">Grafana</text>
+
+  <rect x="518" y="422" width="120" height="44" rx="6" fill="#ffffff" stroke="#8250df" stroke-width="1.5"/>
+  <text x="578" y="448" font-size="12" fill="#1f2328" text-anchor="middle">Prometheus</text>
+
+  <rect x="674" y="422" width="130" height="44" rx="6" fill="#ffffff" stroke="#8250df" stroke-width="1.5"/>
+  <text x="739" y="448" font-size="12" fill="#1f2328" text-anchor="middle">Alertmanager</text>
+
+  <!-- ============ İstek yolu ============ -->
+  <line x1="130" y1="120" x2="162" y2="120" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="146" y="112" font-size="10" fill="#57606a" text-anchor="middle">HTTPS</text>
+
+  <line x1="288" y1="120" x2="312" y2="120" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <path d="M 378 145 L 378 200 L 132 200 L 132 278" fill="none" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="255" y="194" font-size="10" fill="#57606a" text-anchor="middle">X-Origin-Verify</text>
+
+  <line x1="202" y1="307" x2="232" y2="307" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="217" y="299" font-size="10" fill="#57606a" text-anchor="middle">/api</text>
+
+  <line x1="378" y1="307" x2="408" y2="307" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <path d="M 670 284 L 670 210 L 880 210 L 880 151" fill="none" stroke="#1a7f37" stroke-width="1.6" marker-end="url(#arrowGreen)"/>
+  <text x="775" y="204" font-size="10" fill="#1a7f37" text-anchor="middle">HTTPS</text>
+
+  <!-- ============ Gözlemlenebilirlik ============ -->
+  <line x1="400" y1="342" x2="400" y2="384" stroke="#8250df" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrowDash)"/>
+  <text x="414" y="368" font-size="11" fill="#8250df">metrik ve JSON loglar</text>
+
+  <line x1="180" y1="444" x2="210" y2="444" stroke="#8250df" stroke-width="1.5" marker-end="url(#arrowDash)"/>
+  <line x1="326" y1="444" x2="356" y2="444" stroke="#8250df" stroke-width="1.5" marker-end="url(#arrowDash)"/>
+  <line x1="518" y1="444" x2="488" y2="444" stroke="#8250df" stroke-width="1.5" marker-end="url(#arrowDash)"/>
+  <line x1="638" y1="444" x2="668" y2="444" stroke="#8250df" stroke-width="1.5" marker-end="url(#arrowDash)"/>
+
+  <!-- ============ Not ============ -->
+  <text x="30" y="544" font-size="11" fill="#57606a">Backend ve MongoDB dışarı açılmaz · ALB yalnız CloudFront'un eklediği doğrulama header'ını kabul eder, diğer isteklere 403 döner</text>
+</svg>

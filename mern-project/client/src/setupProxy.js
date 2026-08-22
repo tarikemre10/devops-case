@@ -1,12 +1,4 @@
-// CRA dev server'ın (:3000) /api isteklerini backend'e iletmesi için.
-//
-// package.json'daki basit "proxy" alanı yeterli değil: path rewrite yapamaz,
-// yani /api/record isteği backend'e /api/record olarak gider ve 404 alır.
-// Buradaki yapılandırma nginx'in prod davranışının birebir aynısıdır
-// (docker/nginx.conf -> location /api/ { proxy_pass .../; }).
-//
-// http-proxy-middleware react-scripts'in kendi bağımlılığıdır; yeni paket
-// eklenmiyor. CRA bu dosyayı otomatik yükler, ayrıca yapılandırma gerekmez.
+// Lokal geliştirmede nginx ile aynı /api rewrite'ını kullan.
 const { createProxyMiddleware } = require("http-proxy-middleware");
 
 module.exports = function (app) {

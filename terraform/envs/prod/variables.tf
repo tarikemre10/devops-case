@@ -16,7 +16,7 @@ variable "region" {
   default     = "eu-central-1"
 }
 
-# --- Ağ ---------------------------------------------------------------------
+# Ağ
 
 variable "vpc_cidr" {
   description = "VPC CIDR bloğu."
@@ -40,7 +40,7 @@ variable "single_nat_gateway" {
   default     = true
 }
 
-# --- EKS --------------------------------------------------------------------
+# EKS
 
 variable "cluster_version" {
   description = <<-EOT
@@ -113,7 +113,7 @@ variable "cluster_public_access_cidrs" {
   default     = ["0.0.0.0/0"]
 }
 
-# --- CI ---------------------------------------------------------------------
+# CI
 
 variable "github_repository" {
   description = "OWNER/REPO — GitHub Actions OIDC trust policy bununla kısıtlanır."
@@ -134,7 +134,7 @@ variable "github_repository_immutable" {
   default     = "tarikemre10@102986030/devops-case@1341157652"
 }
 
-# --- Uygulama ---------------------------------------------------------------
+# Uygulama
 
 variable "ecr_repositories" {
   description = "Oluşturulacak ECR repoları."
@@ -157,13 +157,7 @@ variable "mongo_database" {
   default     = "sample_training"
 }
 
-# ---------------------------------------------------------------------------
-# Aşama 6 — Monitoring
-# ---------------------------------------------------------------------------
-
-# Chart sürümleri TAM olarak pinlenir (`~>` değil): "~> 88.5" apply gününe göre
-# farklı bir chart çeker ve tekrarlanabilirlik iddiası çöker. Yükseltme bilinçli
-# bir commit olmalıdır.
+# Monitoring chart sürümleri tekrarlanabilirlik için tam pinlenir.
 variable "kube_prometheus_stack_version" {
   description = "prometheus-community/kube-prometheus-stack chart sürümü (tam pin)."
   type        = string

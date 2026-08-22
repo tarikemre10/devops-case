@@ -1,8 +1,4 @@
-# Loki — tek binary, filesystem storage.
-#
-# Chart sürümü terraform/envs/prod/variables.tf'te tam pinli (var.loki_version).
-# Demo ölçeği: S3 + microservices modu bu case için gereksiz maliyet ve
-# hata yüzeyi; tek StatefulSet + gp3 PVC yeterli.
+# Demo ortamı için tek binary Loki ve filesystem storage.
 
 deploymentMode: SingleBinary
 
@@ -10,14 +6,13 @@ loki:
   auth_enabled: false
 
   commonConfig:
-    # SingleBinary'de 3 olamaz; varsayılan 3 bırakılırsa Loki hiç açılmaz.
+    # SingleBinary için replication factor 1 olmalıdır.
     replication_factor: 1
 
   storage:
     type: filesystem
 
-  # schemaConfig AÇIKÇA yazılmalı: güncel chart'lar boş schemaConfig ile
-  # başlamayı reddediyor ("schema config is empty" ile CrashLoop).
+  # Loki schemaConfig olmadan başlamaz.
   schemaConfig:
     configs:
       - from: "2024-04-01"
@@ -29,13 +24,13 @@ loki:
           period: 24h
 
   limits_config:
-    retention_period: 336h # 14 gün (PROJE_PLANI Aşama 6)
+    retention_period: 336h # 14 gün
     reject_old_samples: true
     reject_old_samples_max_age: 168h
     volume_enabled: true
 
   compactor:
-    # retention_period tek başına yetmez: silme işini compactor yapar.
+    # Retention temizliğini compactor yapar.
     retention_enabled: true
     delete_request_store: filesystem
 
@@ -52,7 +47,7 @@ singleBinary:
     limits:
       memory: 768Mi
 
-# SimpleScalable/microservices bileşenleri kapatılır.
+# Dağıtık bileşenleri kapat.
 backend:
   replicas: 0
 read:
@@ -60,7 +55,7 @@ read:
 write:
   replicas: 0
 
-# Pod slotu ve bellek tasarrufu (3 × t3.medium'da marj dar).
+# Gereksiz cache podlarını kapat.
 gateway:
   enabled: false
 lokiCanary:

@@ -1,4 +1,3 @@
-# README kabul kriteri: "ETL.py file should run every 1 hour".
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -8,12 +7,9 @@ metadata:
     app.kubernetes.io/component: batch
 spec:
   schedule: "0 * * * *" # her saat başı (UTC — cluster saati)
-  # Forbid: bir önceki koşu bitmediyse yenisi başlatılmaz. Allow olsaydı
-  # yavaş bir koşu üst üste binerek api.github.com'a paralel istek yağdırırdı.
+  # Önceki koşu bitmeden yenisini başlatma.
   concurrencyPolicy: Forbid
-  # Controller bir süre çalışmazsa (node değişimi vb.) kaçırılan koşu ancak
-  # 5 dakika içindeyse telafi edilir; yoksa atlanır. Bu alan olmadan uzun bir
-  # kesinti sonrası birikmiş koşular arka arkaya tetiklenir.
+  # Kaçırılan koşuyu en fazla 5 dakika içinde telafi et.
   startingDeadlineSeconds: 300
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3

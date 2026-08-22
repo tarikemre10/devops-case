@@ -20,9 +20,7 @@ spec:
       labels:
         app.kubernetes.io/name: frontend
     spec:
-      # nginx imajındaki `nginx` kullanıcısı uid/gid 101.
-      # fsGroup olmadan aşağıdaki emptyDir'ler root sahipli mount edilir ve
-      # entrypoint template'i render edemez.
+      # nginx çalışma dizinleri için yazma grubu.
       securityContext:
         runAsNonRoot: true
         runAsUser: 101
@@ -32,11 +30,7 @@ spec:
           type: RuntimeDefault
       terminationGracePeriodSeconds: 30
 
-      # Replica'ları node'lara yay. `ScheduleAnyway` BİLEREK seçildi:
-      # HPA backend'i 6'ya kadar ölçekliyor ve node sayısı 3 — katı
-      # (DoNotSchedule / requiredDuringScheduling anti-affinity) bir kural
-      # 4. pod'dan itibaren Pending üretir, yani ölçeklemeyi kilitler.
-      # Yumuşak kural normalde yayar, yer yoksa yine de yerleştirir.
+      # Replica'ları farklı node'lara yay.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -47,16 +41,7 @@ spec:
 
       containers:
         - name: nginx
-          # ALB target'ının kaydı silinirken pod ölmemeli.
-          #
-          # Ölçülen sorun: node drain testinde 100 isteğin 8'i 502/timeout aldı.
-          # Sebep: pod SIGTERM'i endpoint kaydı ALB'den düşmeden önce alıyor;
-          # ALB birkaç saniye daha ölmekte olan hedefe istek göndermeye devam
-          # ediyor. Kubernetes'in endpoint kaldırması ile ALB'nin deregister
-          # çağrısının yayılması eşzamanlı değildir.
-          #
-          # preStop bu boşluğu kapatır: container 15 saniye daha istek
-          # karşılamaya devam eder, ALB o sırada hedefi listeden düşürür.
+          # ALB deregistration süresini bekle.
           lifecycle:
             preStop:
               exec:
@@ -66,8 +51,6 @@ spec:
             - name: http
               containerPort: 8080 # 80 root gerektirir, non-root nginx 8080'de
           env:
-            # Sadece bu değişken gerekir; NGINX_LOCAL_RESOLVERS'ı entrypoint
-            # /etc/resolv.conf'tan doldurur (NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1).
             - name: BACKEND_UPSTREAM
               valueFrom:
                 configMapKeyRef:
@@ -97,7 +80,6 @@ spec:
               port: http
             periodSeconds: 10
             failureThreshold: 3
-          # readOnlyRootFilesystem altında nginx'in yazması gereken DÖRT yol.
           volumeMounts:
             - name: cache
               mountPath: /var/cache/nginx
@@ -105,10 +87,7 @@ spec:
               mountPath: /run # nginx.pid
             - name: tmp
               mountPath: /tmp
-            # EN KOLAY GÖZDEN KAÇAN: entrypoint envsubst template'i BURAYA
-            # render eder. Yazamazsa script sessizce çıkar, nginx varsayılan
-            # "Welcome to nginx" sayfasını servis eder ve /api proxy'si hiç
-            # kurulmaz — pod yine de Ready görünür.
+            # entrypoint envsubst çıktısını buraya yazar.
             - name: conf
               mountPath: /etc/nginx/conf.d
       volumes:

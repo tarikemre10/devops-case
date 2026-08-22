@@ -1,16 +1,4 @@
-# kube-prometheus-stack — Aşama 6
-#
-# Chart sürümü terraform/envs/prod/variables.tf'te TAM olarak pinlidir
-# (var.kube_prometheus_stack_version). Burada sürüm yazmayın.
-#
-# Alert kuralları bu dosyada DEĞİL, monitoring/alerts/mern-rules.yaml'da;
-# Terraform onu okuyup `additionalPrometheusRulesMap` olarak enjekte eder.
-
-# ---------------------------------------------------------------------------
-# EKS'te scrape EDİLEMEYEN bileşenler
-# ---------------------------------------------------------------------------
-# Control plane AWS tarafında yönetiliyor; bu job'lar açık kalırsa hedefler
-# kalıcı olarak "down" görünür ve gerçek arızayı gürültüde kaybederiz.
+# EKS'in yönetilen control-plane bileşenlerini scrape etme.
 kubeControllerManager:
   enabled: false
 kubeScheduler:
@@ -20,9 +8,7 @@ kubeEtcd:
 kubeProxy:
   enabled: false
 
-# ---------------------------------------------------------------------------
 # Prometheus
-# ---------------------------------------------------------------------------
 prometheus:
   prometheusSpec:
     retention: 7d
@@ -30,10 +16,7 @@ prometheus:
     scrapeInterval: 30s
     evaluationInterval: 30s
 
-    # KRİTİK: bu dört bayrak `false` olmadan Prometheus YALNIZCA chart'ın kendi
-    # ürettiği kaynakları toplar. Dışarıdan gelen PrometheusRule / ServiceMonitor
-    # hata vermeden, SESSİZCE yok sayılır — Aşama 6'nın en olası tuzağı budur.
-    # Doğrulama: curl localhost:9090/api/v1/rules | jq '.data.groups[].name'
+    # Harici PrometheusRule ve ServiceMonitor kaynaklarını seç.
     ruleSelectorNilUsesHelmValues: false
     serviceMonitorSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
@@ -55,9 +38,7 @@ prometheus:
             requests:
               storage: 20Gi
 
-# ---------------------------------------------------------------------------
 # Alertmanager
-# ---------------------------------------------------------------------------
 alertmanager:
   alertmanagerSpec:
     resources:
@@ -66,14 +47,10 @@ alertmanager:
         memory: 96Mi
       limits:
         memory: 192Mi
-    # Alert geçmişi 3 günlük bir demoda kalıcı diske değmez; PVC'siz emptyDir
-    # kullanmak destroy'u da kolaylaştırır.
+    # Demo ortamında kalıcı alarm geçmişi tutulmaz.
     storage: {}
 
-  # Slack webhook'u YOK (bilinçli karar, PROJE_PLANI Aşama 6).
-  # Tüm alert'ler "null" receiver'a düşer; kanıt Alertmanager UI'daki firing
-  # listesidir. var.slack_webhook_url doldurulursa Terraform bu bloğun üzerine
-  # ikinci bir values dokümanı bindirip slack-notifications receiver'ını üretir.
+  # Slack yapılandırılmadığında alarmları null receiver karşılar.
   config:
     global:
       resolve_timeout: 5m
@@ -89,35 +66,31 @@ alertmanager:
     receivers:
       - name: "null"
 
-# ---------------------------------------------------------------------------
 # Grafana
-# ---------------------------------------------------------------------------
 grafana:
-  # Parola git'e girmez: Terraform random_password üretir, Secret'a yazar.
+  # Admin parolası Terraform Secret'ından gelir.
   admin:
     existingSecret: grafana-admin
     userKey: admin-user
     passwordKey: admin-password
 
-  # Dışarı AÇILMAZ. ALB Security Group yalnız CloudFront prefix list'ine açık;
-  # ikinci bir public giriş Aşama 7 güvenlik listesini bozar. Erişim:
-  #   kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+  # Yalnız port-forward ile erişilir.
   service:
     type: ClusterIP
   ingress:
     enabled: false
 
-  # Kalıcı disk yok: dashboard'lar ConfigMap'ten (sidecar) geliyor, kullanıcı
-  # tarafında saklanacak durum kalmıyor. Yeniden kurulumda hiçbir şey kaybolmaz.
+  # Dashboard'lar ConfigMap'ten yüklendiği için kalıcı disk gerekmez.
   persistence:
     enabled: false
 
+  # Grafana başlangıç sırasındaki bellek artışı için 512Mi gerekir.
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
-    limits:
       memory: 256Mi
+    limits:
+      memory: 512Mi
 
   sidecar:
     dashboards:
@@ -140,12 +113,9 @@ grafana:
       jsonData:
         maxLines: 1000
 
-# ---------------------------------------------------------------------------
 # Exporter'lar
-# ---------------------------------------------------------------------------
 kube-state-metrics:
-  # ETL alert'i kube_cronjob_status_last_successful_time metriğine dayanıyor;
-  # cronjob/job kaynakları varsayılanda açık, açıkça yazılıyor ki kimse kapatmasın.
+  # ETL alarmı CronJob ve Job metriklerini kullanır.
   metricLabelsAllowlist:
     - pods=[app.kubernetes.io/name]
   resources:

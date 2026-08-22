@@ -70,7 +70,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(kube_job_status_succeeded{namespace=\"mern\"}[24h])) or vector(0)"
+          "expr": "round(sum(increase(kube_job_status_succeeded{namespace=\"mern\"}[24h])) or vector(0))"
         }
       ]
     },
@@ -94,7 +94,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(kube_job_status_failed{namespace=\"mern\"}[24h])) or vector(0)"
+          "expr": "round(sum(increase(kube_job_status_failed{namespace=\"mern\"}[24h])) or vector(0))"
         }
       ]
     },
