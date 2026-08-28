@@ -8,7 +8,7 @@ COPY . .
 RUN npm run build
 
 # nginx runtime
-FROM nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 AS runtime
+FROM nginx@sha256:b34848eff6db786b6b1282d3a9c3fd0b5563dfb6d261df4923378b419e0d24f0 AS runtime
 
 ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1 \
     BACKEND_UPSTREAM=backend:5050
